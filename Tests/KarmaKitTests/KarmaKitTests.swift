@@ -383,10 +383,33 @@ import Foundation
   #expect(first.digest != second.digest)
 }
 
+@Test func toolManifestDigestChangesWhenOutputDescriptionChanges() throws {
+  let first = try ToolManifest(
+    name: "lookup",
+    description: "Looks up public data.",
+    outputDescription: "A short answer.",
+    inputs: [
+      "query": ToolInput(type: .string, description: "Search query.")
+    ]
+  )
+  let second = try ToolManifest(
+    name: "lookup",
+    description: "Looks up public data.",
+    outputDescription: "A JSON payload.",
+    inputs: [
+      "query": ToolInput(type: .string, description: "Search query.")
+    ]
+  )
+
+  #expect(first.digest.count == 64)
+  #expect(first.digest != second.digest)
+}
+
 @Test func toolManifestRedactionCleansDescriptionsAndNestedInputs() throws {
   let manifest = try ToolManifest(
     name: "send",
     description: "Sends with api_key=tool-secret.",
+    outputDescription: "Returns token=output-secret.",
     inputs: [
       "payload": .object(
         description: "Uses token=payload-secret.",
@@ -405,6 +428,7 @@ import Foundation
   let json = String(decoding: data, as: UTF8.self)
 
   #expect(!json.contains("tool-secret"))
+  #expect(!json.contains("output-secret"))
   #expect(!json.contains("payload-secret"))
   #expect(!json.contains("array-secret"))
   #expect(!json.contains("item-secret"))
@@ -669,13 +693,19 @@ import Foundation
 
 @Test func noInputFoundationToolAdapterCanCallKarmaTool() async throws {
   if #available(macOS 26.0, *) {
-    let tool = ClosureTool(name: "current_time", description: "Returns time.", inputs: [:]) { _ in
+    let tool = ClosureTool(
+      name: "current_time",
+      description: "Returns time.",
+      outputDescription: "An ISO 8601 timestamp.",
+      inputs: [:]
+    ) { _ in
       "2026-05-30T13:00:00Z"
     }
     let adapter = try FoundationModelToolAdapter(tool: tool)
     let output = try await adapter.call(arguments: GeneratedContent(properties: [:]))
 
     #expect(adapter.name == "current_time")
+    #expect(adapter.description.contains("Returns: An ISO 8601 timestamp."))
     #expect(output == "2026-05-30T13:00:00Z")
   }
 }

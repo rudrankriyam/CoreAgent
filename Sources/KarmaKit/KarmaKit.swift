@@ -136,34 +136,62 @@ public struct ToolCall: Codable, Equatable, Sendable {
 public struct ToolManifest: Codable, Equatable, Sendable {
   public var name: String
   public var description: String
+  public var outputDescription: String?
   public var inputs: [String: ToolInput]
   public var digest: String
 
-  public init(name: String, description: String, inputs: [String: ToolInput]) throws {
+  public init(
+    name: String,
+    description: String,
+    outputDescription: String? = nil,
+    inputs: [String: ToolInput]
+  ) throws {
     self.name = name
     self.description = description
+    self.outputDescription = outputDescription
     self.inputs = inputs
-    self.digest = try Self.digest(name: name, description: description, inputs: inputs)
+    self.digest = try Self.digest(
+      name: name,
+      description: description,
+      outputDescription: outputDescription,
+      inputs: inputs
+    )
   }
 
   public init(tool: any Tool) throws {
-    try self.init(name: tool.name, description: tool.description, inputs: tool.inputs)
+    try self.init(
+      name: tool.name,
+      description: tool.description,
+      outputDescription: (tool as? any ToolOutputDescribing)?.outputDescription,
+      inputs: tool.inputs
+    )
   }
 
   public func redacted(using policy: AgentRedactionPolicy = .standard) throws -> ToolManifest {
     try ToolManifest(
       name: name,
       description: policy.redact(description),
+      outputDescription: outputDescription.map(policy.redact),
       inputs: inputs.reduce(into: [String: ToolInput]()) { partialResult, pair in
         partialResult[pair.key] = pair.value.redacted(using: policy)
       }
     )
   }
 
-  private static func digest(name: String, description: String, inputs: [String: ToolInput]) throws -> String {
+  private static func digest(
+    name: String,
+    description: String,
+    outputDescription: String?,
+    inputs: [String: ToolInput]
+  ) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
-    let payload = ToolManifestPayload(name: name, description: description, inputs: inputs)
+    let payload = ToolManifestPayload(
+      name: name,
+      description: description,
+      outputDescription: outputDescription,
+      inputs: inputs
+    )
     return SHA256.hash(data: try encoder.encode(payload))
       .map { String(format: "%02x", $0) }
       .joined()
@@ -173,6 +201,7 @@ public struct ToolManifest: Codable, Equatable, Sendable {
 private struct ToolManifestPayload: Codable {
   var name: String
   var description: String
+  var outputDescription: String?
   var inputs: [String: ToolInput]
 }
 
@@ -454,6 +483,10 @@ public protocol Tool: Sendable {
   func call(arguments: [String: String]) async throws -> String
 }
 
+public protocol ToolOutputDescribing: Tool {
+  var outputDescription: String? { get }
+}
+
 public protocol ToolExecutionPolicy: Sendable {
   func authorize(_ context: ToolExecutionContext) async throws
 }
@@ -485,20 +518,23 @@ public struct TrustedToolExecutionPolicy: ToolExecutionPolicy {
   }
 }
 
-public struct ClosureTool: Tool {
+public struct ClosureTool: ToolOutputDescribing {
   public var name: String
   public var description: String
+  public var outputDescription: String?
   public var inputs: [String: ToolInput]
   private let handler: @Sendable ([String: String]) async throws -> String
 
   public init(
     name: String,
     description: String,
+    outputDescription: String? = nil,
     inputs: [String: ToolInput],
     handler: @escaping @Sendable ([String: String]) async throws -> String
   ) {
     self.name = name
     self.description = description
+    self.outputDescription = outputDescription
     self.inputs = inputs
     self.handler = handler
   }
@@ -516,9 +552,10 @@ public struct ClosureTool: Tool {
   }
 }
 
-public struct ManagedAgentTool: ReportingTool {
+public struct ManagedAgentTool: ReportingTool, ToolOutputDescribing {
   public var name: String
   public var description: String
+  public var outputDescription: String?
   public var inputs: [String: ToolInput]
   private let agent: ToolCallingAgent
   private let cancellation: AgentCancellation?
@@ -535,6 +572,7 @@ public struct ManagedAgentTool: ReportingTool {
   ) {
     self.name = name
     self.description = description
+    self.outputDescription = "Final answer returned by the delegated agent."
     self.inputs = [
       taskInputName: ToolInput(type: .string, description: taskInputDescription)
     ]

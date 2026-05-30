@@ -351,7 +351,14 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
   }
 
   public var name: String { tool.name }
-  public var description: String { tool.description }
+  public var description: String {
+    guard let outputDescription = (tool as? any ToolOutputDescribing)?.outputDescription,
+          !outputDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return tool.description
+    }
+
+    return "\(tool.description)\nReturns: \(outputDescription)"
+  }
 
   @concurrent
   public func call(arguments: GeneratedContent) async throws -> String {

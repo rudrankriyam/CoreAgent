@@ -30,9 +30,10 @@ public enum KarmaToolError: Error, CustomStringConvertible, Equatable, Sendable 
   }
 }
 
-public struct CurrentTimeTool: Tool {
+public struct CurrentTimeTool: ToolOutputDescribing {
   public var name = "current_time"
   public var description = "Returns the current date and time in ISO 8601 format."
+  public var outputDescription: String? = "Current date and time as an ISO 8601 timestamp."
   public var inputs: [String: ToolInput] = [:]
 
   private let now: @Sendable () -> Date
@@ -46,9 +47,10 @@ public struct CurrentTimeTool: Tool {
   }
 }
 
-public struct MathTool: Tool {
+public struct MathTool: ToolOutputDescribing {
   public var name = "calculate"
   public var description = "Evaluates a basic arithmetic expression with +, -, *, /, and parentheses."
+  public var outputDescription: String? = "The numeric result of the arithmetic expression."
   public var inputs: [String: ToolInput] = [
     "expression": ToolInput(type: .string, description: "Arithmetic expression to evaluate.")
   ]
@@ -69,9 +71,10 @@ public struct MathTool: Tool {
   }
 }
 
-public struct FileReadTool: Tool {
+public struct FileReadTool: ToolOutputDescribing {
   public var name = "read_file"
   public var description = "Reads a UTF-8 text file from an allowed directory."
+  public var outputDescription: String? = "The UTF-8 file contents."
   public var inputs: [String: ToolInput] = [
     "path": ToolInput(type: .string, description: "Path to the text file.")
   ]
@@ -116,9 +119,10 @@ public struct FileReadTool: Tool {
   }
 }
 
-public struct SearchFilesTool: Tool {
+public struct SearchFilesTool: ToolOutputDescribing {
   public var name = "search_files"
   public var description = "Searches UTF-8 text files in allowed directories and returns JSON snippets."
+  public var outputDescription: String? = "A JSON array of matching file paths, line numbers, and excerpts."
   public var inputs: [String: ToolInput] = [
     "query": ToolInput(type: .string, description: "Text to search for."),
     "max_results": ToolInput(type: .integer, description: "Maximum number of matches to return.", isRequired: false)
