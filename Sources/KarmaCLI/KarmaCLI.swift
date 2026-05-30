@@ -15,6 +15,7 @@ struct KarmaCLI {
 
       let enablesDemoTools = arguments.removeAll("--demo-tools")
       let enablesVerboseOutput = arguments.removeAll("--verbose")
+      let enablesStreaming = arguments.removeAll("--stream")
       let prompt = arguments.joined(separator: " ")
 
       if #available(macOS 26.0, *) {
@@ -26,8 +27,18 @@ struct KarmaCLI {
           model: provider,
           validatesToolNames: true
         )
-        let run = try await agent.run(prompt)
-        print(run.finalAnswer)
+        let run: AgentRun
+        if enablesStreaming {
+          run = try await agent.runStreaming(prompt) { partial in
+            print("\r\(partial)", terminator: "")
+            fflush(stdout)
+          }
+          print("")
+        } else {
+          run = try await agent.run(prompt)
+          print(run.finalAnswer)
+        }
+
         if enablesVerboseOutput {
           fputs("\n\(run.events.karmaDebugDescription)\n", stderr)
         }
@@ -45,6 +56,7 @@ struct KarmaCLI {
     print("Usage: karma <prompt>")
     print("       karma --demo-tools <prompt>")
     print("       karma --verbose --demo-tools <prompt>")
+    print("       karma --stream <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
   }
 }

@@ -38,6 +38,7 @@ Model providers conform to `ModelProvider` and return either tool calls or a fin
 swift run karma "Explain tool calling in one sentence"
 swift run karma --demo-tools "Use the multiply tool to multiply 12 by 13. Return only the number."
 swift run karma --verbose --demo-tools "What time is it? Use the available action."
+swift run karma --stream "Write one sentence about local agents."
 ```
 
 ## Current Foundation
@@ -54,6 +55,9 @@ swift run karma --verbose --demo-tools "What time is it? Use the available actio
 - `ManagedAgentTool`: exposes an agent as a callable tool.
 - `AgentObserver`: records run, model, tool, and answer events.
 - `FinalAnswerValidator`: validates answers before a run succeeds.
+- `RetryPolicy`: retries transient model failures.
+- `AgentTimeouts`: limits long-running tool calls.
+- `StreamingModelProvider`: streams partial responses when a provider supports it.
 
 ## Roadmap
 
@@ -62,7 +66,7 @@ swift run karma --verbose --demo-tools "What time is it? Use the available actio
 - SwiftData or SQLite memory store.
 - Local RAG examples.
 - SwiftUI debugging view for agent runs.
-- Managed agents and richer run inspection.
+- Structured output helpers.
 
 ## Contributing
 

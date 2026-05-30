@@ -282,6 +282,71 @@ import FoundationModels
   }
 }
 
+@Test func modelGenerationRetriesTransientFailures() async throws {
+  let model = FlakyModel(failuresBeforeSuccess: 1, answer: "recovered")
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    retryPolicy: RetryPolicy(maximumRetries: 1)
+  )
+
+  let run = try await agent.run("Recover")
+
+  #expect(run.finalAnswer == "recovered")
+  #expect(run.events.map(\.kind).contains(.modelRetry))
+}
+
+@Test func modelGenerationReportsRetryExhaustion() async throws {
+  let model = FlakyModel(failuresBeforeSuccess: 2, answer: "recovered")
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    retryPolicy: RetryPolicy(maximumRetries: 1)
+  )
+
+  await #expect(throws: KarmaError.retryLimitExceeded(attempts: 2, reason: "transient")) {
+    _ = try await agent.run("Recover")
+  }
+  #expect(agent.memory.events.last?.kind == .runFailed)
+}
+
+@Test func toolCallsCanTimeOut() async throws {
+  let slowTool = ClosureTool(name: "slow", description: "Sleeps too long.", inputs: [:]) { _ in
+    try await Task.sleep(for: .milliseconds(100))
+    return "late"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(name: "slow")])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [slowTool],
+    model: model,
+    timeouts: AgentTimeouts(toolCall: .milliseconds(10))
+  )
+
+  do {
+    _ = try await agent.run("Call slow tool")
+    Issue.record("Expected tool timeout")
+  } catch KarmaError.timedOut(let operation, _) {
+    #expect(operation == "tool.slow")
+  }
+}
+
+@Test func streamingRunEmitsPartialResponses() async throws {
+  let model = StreamingScriptedModel(partials: ["hel", "hello"], finalAnswer: "hello")
+  let recorder = PartialRecorder()
+  let agent = ToolCallingAgent(tools: [], model: model)
+
+  let run = try await agent.runStreaming("Stream") { partial in
+    await recorder.record(partial)
+  }
+  let partials = await recorder.partials
+
+  #expect(run.finalAnswer == "hello")
+  #expect(partials == ["hel", "hello"])
+  #expect(run.events.filter { $0.kind == .partialResponse }.map(\.message) == ["hel", "hello"])
+}
+
 private enum PolicyError: Error, Equatable {
   case denied(String)
 }
@@ -301,5 +366,64 @@ private actor RecordingAgentObserver: AgentObserver {
 
   func observe(_ event: AgentEvent) {
     events.append(event)
+  }
+}
+
+private enum TestModelError: Error, CustomStringConvertible {
+  case transient
+
+  var description: String {
+    switch self {
+    case .transient:
+      "transient"
+    }
+  }
+}
+
+private actor FlakyModel: ModelProvider {
+  private var failuresBeforeSuccess: Int
+  private let answer: String
+
+  init(failuresBeforeSuccess: Int, answer: String) {
+    self.failuresBeforeSuccess = failuresBeforeSuccess
+    self.answer = answer
+  }
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    if failuresBeforeSuccess > 0 {
+      failuresBeforeSuccess -= 1
+      throw TestModelError.transient
+    }
+
+    return .finalAnswer(answer)
+  }
+}
+
+private struct StreamingScriptedModel: StreamingModelProvider {
+  var partials: [String]
+  var finalAnswer: String
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    .finalAnswer(finalAnswer)
+  }
+
+  func stream(
+    messages: [AgentMessage],
+    tools: [any KarmaKit.Tool],
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> ModelOutput {
+    for partial in partials {
+      await onPartialResponse(partial)
+    }
+
+    return .finalAnswer(finalAnswer)
+  }
+}
+
+private actor PartialRecorder {
+  private(set) var partials: [String] = []
+
+  func record(_ partial: String) {
+    partials.append(partial)
   }
 }

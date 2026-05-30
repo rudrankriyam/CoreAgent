@@ -5,6 +5,8 @@ public enum KarmaError: Error, Equatable, Sendable {
   case duplicateToolName(String)
   case invalidToolArguments(tool: String, expected: [String])
   case finalAnswerRejected(String)
+  case timedOut(operation: String, seconds: Double)
+  case retryLimitExceeded(attempts: Int, reason: String)
   case maxStepsReached(Int)
 }
 
@@ -86,8 +88,10 @@ public struct ToolResult: Codable, Equatable, Sendable {
 public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case runStarted
   case modelOutput
+  case modelRetry
   case toolCallStarted
   case toolCallFinished
+  case partialResponse
   case finalAnswerAccepted
   case runFailed
 }
@@ -233,6 +237,36 @@ public protocol ModelProvider: Sendable {
   func generate(messages: [AgentMessage], tools: [any Tool]) async throws -> ModelOutput
 }
 
+public protocol StreamingModelProvider: ModelProvider {
+  func stream(
+    messages: [AgentMessage],
+    tools: [any Tool],
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> ModelOutput
+}
+
+public struct RetryPolicy: Equatable, Sendable {
+  public var maximumRetries: Int
+  public var delay: Duration
+
+  public init(maximumRetries: Int = 0, delay: Duration = .zero) {
+    self.maximumRetries = maximumRetries
+    self.delay = delay
+  }
+
+  public static let none = RetryPolicy()
+}
+
+public struct AgentTimeouts: Equatable, Sendable {
+  public var toolCall: Duration?
+
+  public init(toolCall: Duration? = nil) {
+    self.toolCall = toolCall
+  }
+
+  public static let none = AgentTimeouts()
+}
+
 public struct ActionStep: Equatable, Sendable {
   public var stepNumber: Int
   public var modelOutput: ModelOutput
@@ -337,6 +371,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let finalAnswerValidators: [any FinalAnswerValidator]
   public let observers: [any AgentObserver]
   public let resetsMemoryBeforeRun: Bool
+  public let retryPolicy: RetryPolicy
+  public let timeouts: AgentTimeouts
   public private(set) var memory: AgentMemory
 
   public init(
@@ -347,7 +383,9 @@ public final class ToolCallingAgent: @unchecked Sendable {
     toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy(),
     finalAnswerValidators: [any FinalAnswerValidator] = [NonEmptyFinalAnswerValidator()],
     observers: [any AgentObserver] = [],
-    resetsMemoryBeforeRun: Bool = true
+    resetsMemoryBeforeRun: Bool = true,
+    retryPolicy: RetryPolicy = .none,
+    timeouts: AgentTimeouts = .none
   ) {
     self.model = model
     self.tools = tools.reduce(into: [String: any Tool]()) { partialResult, tool in
@@ -358,6 +396,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.finalAnswerValidators = finalAnswerValidators
     self.observers = observers
     self.resetsMemoryBeforeRun = resetsMemoryBeforeRun
+    self.retryPolicy = retryPolicy
+    self.timeouts = timeouts
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
 
@@ -370,6 +410,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
     finalAnswerValidators: [any FinalAnswerValidator] = [NonEmptyFinalAnswerValidator()],
     observers: [any AgentObserver] = [],
     resetsMemoryBeforeRun: Bool = true,
+    retryPolicy: RetryPolicy = .none,
+    timeouts: AgentTimeouts = .none,
     validatesToolNames: Bool
   ) throws {
     if validatesToolNames {
@@ -389,11 +431,27 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolExecutionPolicy: toolExecutionPolicy,
       finalAnswerValidators: finalAnswerValidators,
       observers: observers,
-      resetsMemoryBeforeRun: resetsMemoryBeforeRun
+      resetsMemoryBeforeRun: resetsMemoryBeforeRun,
+      retryPolicy: retryPolicy,
+      timeouts: timeouts
     )
   }
 
   public func run(_ task: String) async throws -> AgentRun {
+    try await run(task, streaming: nil)
+  }
+
+  public func runStreaming(
+    _ task: String,
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> AgentRun {
+    try await run(task, streaming: onPartialResponse)
+  }
+
+  private func run(
+    _ task: String,
+    streaming onPartialResponse: (@Sendable (String) async -> Void)?
+  ) async throws -> AgentRun {
     if resetsMemoryBeforeRun {
       memory.reset()
     }
@@ -403,7 +461,10 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
     do {
       for stepNumber in 1...maxSteps {
-        let output = try await model.generate(messages: memory.messages, tools: Array(tools.values))
+        let output = try await generateModelOutput(
+          stepNumber: stepNumber,
+          onPartialResponse: onPartialResponse
+        )
         await emit(.init(kind: .modelOutput, stepNumber: stepNumber, message: output.eventSummary))
 
         switch output {
@@ -425,7 +486,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
             try await toolExecutionPolicy.authorize(.init(call: call, stepNumber: stepNumber, task: task))
             await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call))
-            let output = try await tool.call(arguments: call.arguments)
+            let output = try await callTool(tool, arguments: call.arguments)
             let result = ToolResult(callID: call.id, output: output)
             await emit(.init(kind: .toolCallFinished, stepNumber: stepNumber, toolCall: call, toolResult: result))
             return result
@@ -446,6 +507,55 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
   }
 
+  private func generateModelOutput(
+    stepNumber: Int,
+    onPartialResponse: (@Sendable (String) async -> Void)?
+  ) async throws -> ModelOutput {
+    let tools = Array(tools.values)
+    var attempt = 0
+    var lastError: Error?
+
+    while attempt <= retryPolicy.maximumRetries {
+      do {
+        if let onPartialResponse, let streamingModel = model as? any StreamingModelProvider {
+          return try await streamingModel.stream(
+            messages: memory.messages,
+            tools: tools,
+            onPartialResponse: { partial in
+              await onPartialResponse(partial)
+              await self.emit(.init(kind: .partialResponse, stepNumber: stepNumber, message: partial))
+            }
+          )
+        }
+
+        return try await model.generate(messages: memory.messages, tools: tools)
+      } catch {
+        lastError = error
+        guard attempt < retryPolicy.maximumRetries else {
+          throw KarmaError.retryLimitExceeded(attempts: attempt + 1, reason: String(describing: error))
+        }
+
+        attempt += 1
+        await emit(.init(kind: .modelRetry, stepNumber: stepNumber, message: String(describing: error)))
+        if retryPolicy.delay > .zero {
+          try await Task.sleep(for: retryPolicy.delay)
+        }
+      }
+    }
+
+    throw KarmaError.retryLimitExceeded(attempts: attempt, reason: String(describing: lastError))
+  }
+
+  private func callTool(_ tool: any Tool, arguments: [String: String]) async throws -> String {
+    guard let timeout = timeouts.toolCall else {
+      return try await tool.call(arguments: arguments)
+    }
+
+    return try await withTimeout(timeout, operation: "tool.\(tool.name)") {
+      try await tool.call(arguments: arguments)
+    }
+  }
+
   private func validateFinalAnswer(_ answer: String, task: String) async throws {
     let context = FinalAnswerValidationContext(answer: answer, task: task, memory: memory)
     for validator in finalAnswerValidators {
@@ -458,6 +568,36 @@ public final class ToolCallingAgent: @unchecked Sendable {
     for observer in observers {
       await observer.observe(event)
     }
+  }
+}
+
+public func withTimeout<T: Sendable>(
+  _ duration: Duration,
+  operation: String,
+  _ work: @escaping @Sendable () async throws -> T
+) async throws -> T {
+  try await withThrowingTaskGroup(of: T.self) { group in
+    group.addTask {
+      try await work()
+    }
+    group.addTask {
+      try await Task.sleep(for: duration)
+      throw KarmaError.timedOut(operation: operation, seconds: duration.karmaSeconds)
+    }
+
+    guard let result = try await group.next() else {
+      throw KarmaError.timedOut(operation: operation, seconds: duration.karmaSeconds)
+    }
+
+    group.cancelAll()
+    return result
+  }
+}
+
+private extension Duration {
+  var karmaSeconds: Double {
+    let components = components
+    return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
   }
 }
 

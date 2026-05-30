@@ -25,7 +25,7 @@ public enum FoundationModelProviderError: Error, CustomStringConvertible, Equata
 @available(iOS 26.0, macOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
-public struct FoundationModelProvider: ModelProvider {
+public struct FoundationModelProvider: StreamingModelProvider {
   public var model: SystemLanguageModel
   public var instructions: String?
   public var options: GenerationOptions
@@ -53,6 +53,31 @@ public struct FoundationModelProvider: ModelProvider {
     let prompt = FoundationModelPrompt.makePrompt(messages: messages)
     let response = try await session.respond(to: prompt, options: options)
     return .finalAnswer(response.content, events: FoundationModelTranscriptEvents.makeEvents(from: session.transcript))
+  }
+
+  public func stream(
+    messages: [AgentMessage],
+    tools: [any KarmaKit.Tool],
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> ModelOutput {
+    try validateAvailability()
+
+    let foundationTools = try tools.map { try FoundationModelToolAdapter(tool: $0) }
+    let session = LanguageModelSession(
+      model: model,
+      tools: foundationTools,
+      instructions: instructions
+    )
+
+    let prompt = FoundationModelPrompt.makePrompt(messages: messages)
+    var finalContent = ""
+
+    for try await partialResponse in session.streamResponse(to: prompt, options: options) {
+      finalContent = partialResponse.content
+      await onPartialResponse(partialResponse.content)
+    }
+
+    return .finalAnswer(finalContent, events: FoundationModelTranscriptEvents.makeEvents(from: session.transcript))
   }
 
   private func validateAvailability() throws {
