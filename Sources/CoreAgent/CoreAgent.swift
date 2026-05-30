@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-public enum KarmaError: Error, Equatable, Sendable {
+public enum CoreAgentError: Error, Equatable, Sendable {
   case missingTool(String)
   case duplicateToolName(String)
   case invalidToolArguments(tool: String, expected: [String])
@@ -526,7 +526,7 @@ public struct NonEmptyFinalAnswerValidator: FinalAnswerValidator {
 
   public func validate(_ context: FinalAnswerValidationContext) async throws {
     guard !context.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      throw KarmaError.finalAnswerRejected("Final answer was empty.")
+      throw CoreAgentError.finalAnswerRejected("Final answer was empty.")
     }
   }
 }
@@ -545,7 +545,7 @@ public struct PromptInjectionShieldValidator: FinalAnswerValidator {
 
     let lowercasedAnswer = context.answer.lowercased()
     if let phrase = rejectedPhrases.first(where: { lowercasedAnswer.contains($0) }) {
-      throw KarmaError.finalAnswerRejected(
+      throw CoreAgentError.finalAnswerRejected(
         "Final answer repeated instruction-like tool output: \(phrase)."
       )
     }
@@ -626,7 +626,7 @@ public struct ToolNameAllowlistExecutionPolicy: ToolExecutionPolicy {
 
   public func authorize(_ context: ToolExecutionContext) async throws {
     guard allowedToolNames.contains(context.call.name) else {
-      throw KarmaError.toolDenied(name: context.call.name, reason: "Tool name is not allowed.")
+      throw CoreAgentError.toolDenied(name: context.call.name, reason: "Tool name is not allowed.")
     }
   }
 }
@@ -649,7 +649,7 @@ public struct ApprovalRequiredToolExecutionPolicy: ToolExecutionPolicy {
     case .approved:
       return
     case .denied(let reason):
-      throw KarmaError.toolDenied(name: context.call.name, reason: reason)
+      throw CoreAgentError.toolDenied(name: context.call.name, reason: reason)
     }
   }
 }
@@ -667,7 +667,7 @@ public struct TrustedToolExecutionPolicy: ToolExecutionPolicy {
 
   public func authorize(_ context: ToolExecutionContext) async throws {
     guard let manifest = context.toolManifest, approvedDigests.contains(manifest.digest) else {
-      throw KarmaError.untrustedTool(
+      throw CoreAgentError.untrustedTool(
         name: context.call.name,
         digest: context.toolManifest?.digest ?? "missing-manifest"
       )
@@ -691,14 +691,14 @@ public struct TrustedExternalToolExecutionPolicy: ToolExecutionPolicy {
 
   public func authorize(_ context: ToolExecutionContext) async throws {
     guard let manifest = context.toolManifest, approvedDigests.contains(manifest.digest) else {
-      throw KarmaError.untrustedTool(
+      throw CoreAgentError.untrustedTool(
         name: context.call.name,
         digest: context.toolManifest?.digest ?? "missing-manifest"
       )
     }
 
     guard let identity = manifest.trustIdentity, approvedIdentities.contains(identity) else {
-      throw KarmaError.untrustedToolIdentity(
+      throw CoreAgentError.untrustedToolIdentity(
         name: context.call.name,
         serverID: manifest.trustIdentity?.serverID ?? "missing-identity"
       )
@@ -733,7 +733,7 @@ public struct ClosureTool: ToolOutputDescribing {
       .map(\.key)
 
     guard missingRequiredInputs.isEmpty else {
-      throw KarmaError.invalidToolArguments(tool: name, expected: missingRequiredInputs.sorted())
+      throw CoreAgentError.invalidToolArguments(tool: name, expected: missingRequiredInputs.sorted())
     }
 
     return try await handler(arguments)
@@ -798,7 +798,7 @@ public struct DirectReturnTool: ToolOutputDescribing, ToolDirectReturnDescribing
       .map(\.key)
 
     guard missingRequiredInputs.isEmpty else {
-      throw KarmaError.invalidToolArguments(tool: name, expected: missingRequiredInputs.sorted())
+      throw CoreAgentError.invalidToolArguments(tool: name, expected: missingRequiredInputs.sorted())
     }
 
     return try await handler(arguments)
@@ -840,7 +840,7 @@ public struct ManagedAgentTool: ReportingTool, ToolOutputDescribing {
 
   public func callWithReport(arguments: [String: String]) async throws -> ToolExecutionReport {
     guard let task = arguments[inputs.keys.first ?? "task"] else {
-      throw KarmaError.invalidToolArguments(tool: name, expected: Array(inputs.keys).sorted())
+      throw CoreAgentError.invalidToolArguments(tool: name, expected: Array(inputs.keys).sorted())
     }
 
     do {
@@ -1253,7 +1253,7 @@ public struct TrustedAgentContextProviderExecutionPolicy: AgentContextProviderEx
 
   public func authorize(_ manifest: AgentContextProviderManifest, context: AgentContextProviderContext) async throws {
     guard approvedDigests.contains(manifest.digest) else {
-      throw KarmaError.untrustedContextProvider(name: manifest.name, digest: manifest.digest)
+      throw CoreAgentError.untrustedContextProvider(name: manifest.name, digest: manifest.digest)
     }
   }
 }
@@ -1540,7 +1540,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     guard configuredDigests == runtimeDigests else {
       let configuredNames = toolManifests.map(\.name).sorted().joined(separator: ",")
       let runtimeNames = runtimeManifests.map(\.name).sorted().joined(separator: ",")
-      throw KarmaError.configurationMismatch(
+      throw CoreAgentError.configurationMismatch(
         "Configured tools [\(configuredNames)] do not match runtime tools [\(runtimeNames)]."
       )
     }
@@ -1554,7 +1554,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     guard configuredDigests == runtimeDigests else {
       let configuredNames = contextProviderManifests.map(\.name).sorted().joined(separator: ",")
       let runtimeNames = runtimeManifests.map(\.name).sorted().joined(separator: ",")
-      throw KarmaError.configurationMismatch(
+      throw CoreAgentError.configurationMismatch(
         "Configured context providers [\(configuredNames)] do not match runtime context providers [\(runtimeNames)]."
       )
     }
@@ -2450,7 +2450,7 @@ public struct FileAgentMemoryStore: AgentMemoryStore {
       let data = try encoder.encode(memory)
       try data.write(to: fileURL, options: [.atomic])
     } catch {
-      throw KarmaError.persistenceFailed(String(describing: error))
+      throw CoreAgentError.persistenceFailed(String(describing: error))
     }
   }
 
@@ -2463,7 +2463,7 @@ public struct FileAgentMemoryStore: AgentMemoryStore {
       let data = try Data(contentsOf: fileURL)
       return try decoder.decode(AgentMemory.self, from: data)
     } catch {
-      throw KarmaError.persistenceFailed(String(describing: error))
+      throw CoreAgentError.persistenceFailed(String(describing: error))
     }
   }
 }
@@ -2854,7 +2854,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       var seenToolNames: Set<String> = []
       for tool in tools {
         guard seenToolNames.insert(tool.name).inserted else {
-          throw KarmaError.duplicateToolName(tool.name)
+          throw CoreAgentError.duplicateToolName(tool.name)
         }
       }
     }
@@ -3042,7 +3042,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     try await checkInterruption(cancellation)
 
     guard maxSteps > 0 else {
-      let error = KarmaError.maxStepsReached(maxSteps)
+      let error = CoreAgentError.maxStepsReached(maxSteps)
       await emitFailure(error)
       throw error
     }
@@ -3105,13 +3105,13 @@ public final class ToolCallingAgent: @unchecked Sendable {
                 kind: .finalAnswerRejected,
                 stepNumber: stepNumber,
                 message: rejectionMessage,
-                errorType: String(reflecting: KarmaError.self),
+                errorType: String(reflecting: CoreAgentError.self),
                 errorDescription: rejectionMessage
               )
             )
 
             guard finalAnswerRecoveryMode == .recover, stepNumber < maxSteps else {
-              throw KarmaError.finalAnswerRejected(rejectionMessage)
+              throw CoreAgentError.finalAnswerRejected(rejectionMessage)
             }
 
             memory.addAssistantMessage(answer)
@@ -3220,12 +3220,12 @@ public final class ToolCallingAgent: @unchecked Sendable {
         }
       }
 
-      throw KarmaError.maxStepsReached(maxSteps)
-    } catch KarmaError.interrupted(let reason) {
+      throw CoreAgentError.maxStepsReached(maxSteps)
+    } catch CoreAgentError.interrupted(let reason) {
       if memory.events.last?.kind != .runInterrupted {
         await emit(.init(kind: .runInterrupted, message: reason))
       }
-      throw KarmaError.interrupted(reason: reason)
+      throw CoreAgentError.interrupted(reason: reason)
     } catch {
       await emitFailure(error)
       throw error
@@ -3245,7 +3245,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       return
     }
 
-    let error = KarmaError.tooManyToolCalls(stepNumber: stepNumber, requested: calls.count, maximum: maximum)
+    let error = CoreAgentError.tooManyToolCalls(stepNumber: stepNumber, requested: calls.count, maximum: maximum)
     await emit(
       .init(
         kind: .toolCallDenied,
@@ -3412,7 +3412,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   ) async throws -> PreparedToolCall {
     try await checkInterruption(cancellation, stepNumber: stepNumber)
     guard let tool = tools[call.name] else {
-      throw KarmaError.missingTool(call.name)
+      throw CoreAgentError.missingTool(call.name)
     }
 
     let manifest = try ToolManifest(tool: tool)
@@ -3495,8 +3495,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
         )
       )
       return ToolExecutionOutput(index: prepared.index, result: result, events: events, failure: nil)
-    } catch KarmaError.interrupted(let reason) {
-      throw KarmaError.interrupted(reason: reason)
+    } catch CoreAgentError.interrupted(let reason) {
+      throw CoreAgentError.interrupted(reason: reason)
     } catch let error where shouldRecoverFromToolArgumentError(error) {
       let result = ToolResult(
         callID: prepared.call.id,
@@ -3556,11 +3556,11 @@ public final class ToolCallingAgent: @unchecked Sendable {
       return false
     }
 
-    guard let karmaError = error as? KarmaError else {
+    guard let coreAgentError = error as? CoreAgentError else {
       return false
     }
 
-    switch karmaError {
+    switch coreAgentError {
     case .invalidToolArguments, .unexpectedToolArguments, .invalidToolArgumentValue:
       return true
     default:
@@ -3601,7 +3601,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     let providedArguments = Set(call.arguments.keys)
     let unexpectedArguments = providedArguments.subtracting(expectedArguments).sorted()
     guard unexpectedArguments.isEmpty else {
-      throw KarmaError.unexpectedToolArguments(tool: call.name, unexpected: unexpectedArguments)
+      throw CoreAgentError.unexpectedToolArguments(tool: call.name, unexpected: unexpectedArguments)
     }
 
     let missingRequiredArguments = tool.inputs
@@ -3609,7 +3609,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       .map(\.key)
       .sorted()
     guard missingRequiredArguments.isEmpty else {
-      throw KarmaError.invalidToolArguments(tool: call.name, expected: missingRequiredArguments)
+      throw CoreAgentError.invalidToolArguments(tool: call.name, expected: missingRequiredArguments)
     }
 
     for argument in providedArguments.sorted() {
@@ -3707,7 +3707,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       .map { "\(argumentPath).\($0)" }
       .sorted()
     guard unexpectedProperties.isEmpty else {
-      throw KarmaError.unexpectedToolArguments(tool: toolName, unexpected: unexpectedProperties)
+      throw CoreAgentError.unexpectedToolArguments(tool: toolName, unexpected: unexpectedProperties)
     }
 
     let missingProperties = input.properties
@@ -3715,7 +3715,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       .map { "\(argumentPath).\($0.key)" }
       .sorted()
     guard missingProperties.isEmpty else {
-      throw KarmaError.invalidToolArguments(tool: toolName, expected: missingProperties)
+      throw CoreAgentError.invalidToolArguments(tool: toolName, expected: missingProperties)
     }
 
     for propertyName in providedProperties.sorted() {
@@ -3797,8 +3797,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
     argumentPath: String,
     input: ToolInput,
     value: String
-  ) -> KarmaError {
-    KarmaError.invalidToolArgumentValue(
+  ) -> CoreAgentError {
+    CoreAgentError.invalidToolArgumentValue(
       tool: toolName,
       argument: argumentPath,
       expectedType: input.type.rawValue,
@@ -3835,7 +3835,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
           }
         }
         guard attempt < retryPolicy.maximumRetries else {
-          throw KarmaError.retryLimitExceeded(attempts: attempt + 1, reason: String(describing: error))
+          throw CoreAgentError.retryLimitExceeded(attempts: attempt + 1, reason: String(describing: error))
         }
 
         attempt += 1
@@ -3846,7 +3846,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       }
     }
 
-    throw KarmaError.retryLimitExceeded(attempts: attempt, reason: String(describing: lastError))
+    throw CoreAgentError.retryLimitExceeded(attempts: attempt, reason: String(describing: lastError))
   }
 
   private func generateModelAttempt(
@@ -4004,7 +4004,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     } else {
       await emit(.init(kind: .runInterrupted, message: reason))
     }
-    throw KarmaError.interrupted(reason: reason)
+    throw CoreAgentError.interrupted(reason: reason)
   }
 
   private func checkToolInterruption(
@@ -4020,7 +4020,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     guard let reason = await cancellation?.interruptionReason else {
       return
     }
-    throw KarmaError.interrupted(reason: reason)
+    throw CoreAgentError.interrupted(reason: reason)
   }
 
   private func enforceModelInputLimit(messages: [AgentMessage], tools: [any Tool]) throws {
@@ -4036,7 +4036,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     guard characters <= safeMaximum else {
-      throw KarmaError.modelInputTooLarge(characters: characters, maximum: safeMaximum)
+      throw CoreAgentError.modelInputTooLarge(characters: characters, maximum: safeMaximum)
     }
   }
 
@@ -4153,11 +4153,11 @@ public func withTimeout<T: Sendable>(
     }
     group.addTask {
       try await Task.sleep(for: duration)
-      throw KarmaError.timedOut(operation: operation, seconds: duration.karmaSeconds)
+      throw CoreAgentError.timedOut(operation: operation, seconds: duration.coreAgentSeconds)
     }
 
     guard let result = try await group.next() else {
-      throw KarmaError.timedOut(operation: operation, seconds: duration.karmaSeconds)
+      throw CoreAgentError.timedOut(operation: operation, seconds: duration.coreAgentSeconds)
     }
 
     group.cancelAll()
@@ -4166,7 +4166,7 @@ public func withTimeout<T: Sendable>(
 }
 
 private extension Duration {
-  var karmaSeconds: Double {
+  var coreAgentSeconds: Double {
     let components = components
     return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
   }

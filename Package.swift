@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-  name: "KarmaKit",
+  name: "CoreAgent",
   platforms: [
     .iOS(.v26),
     .macOS(.v26),
@@ -11,53 +11,53 @@ let package = Package(
   ],
   products: [
     .library(
-      name: "KarmaKit",
-      targets: ["KarmaKit"]
+      name: "CoreAgent",
+      targets: ["CoreAgent"]
     ),
     .library(
-      name: "KarmaKitFoundationModels",
-      targets: ["KarmaKitFoundationModels"]
+      name: "CoreAgentFoundationModels",
+      targets: ["CoreAgentFoundationModels"]
     ),
     .library(
-      name: "KarmaKitTools",
-      targets: ["KarmaKitTools"]
+      name: "CoreAgentTools",
+      targets: ["CoreAgentTools"]
     ),
     .executable(
-      name: "karma",
-      targets: ["KarmaCLI"]
+      name: "core-agent",
+      targets: ["CoreAgentCLI"]
     )
   ],
   targets: [
-    .target(name: "KarmaKit"),
+    .target(name: "CoreAgent"),
     .target(
-      name: "KarmaKitFoundationModels",
-      dependencies: ["KarmaKit"]
+      name: "CoreAgentFoundationModels",
+      dependencies: ["CoreAgent"]
     ),
     .target(
-      name: "KarmaKitTools",
-      dependencies: ["KarmaKit"]
+      name: "CoreAgentTools",
+      dependencies: ["CoreAgent"]
     ),
     .executableTarget(
-      name: "KarmaCLI",
+      name: "CoreAgentCLI",
       dependencies: [
-        "KarmaKit",
-        "KarmaKitFoundationModels",
-        "KarmaKitTools"
+        "CoreAgent",
+        "CoreAgentFoundationModels",
+        "CoreAgentTools"
       ]
     ),
     .testTarget(
-      name: "KarmaKitTests",
+      name: "CoreAgentTests",
       dependencies: [
-        "KarmaKit",
-        "KarmaKitFoundationModels",
-        "KarmaKitTools"
+        "CoreAgent",
+        "CoreAgentFoundationModels",
+        "CoreAgentTools"
       ]
     ),
     .testTarget(
-      name: "KarmaKitToolsTests",
+      name: "CoreAgentToolsTests",
       dependencies: [
-        "KarmaKit",
-        "KarmaKitTools"
+        "CoreAgent",
+        "CoreAgentTools"
       ]
     )
   ]

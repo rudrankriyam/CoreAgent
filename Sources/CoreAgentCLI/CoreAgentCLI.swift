@@ -1,10 +1,10 @@
 import Foundation
-import KarmaKit
-import KarmaKitFoundationModels
-import KarmaKitTools
+import CoreAgent
+import CoreAgentFoundationModels
+import CoreAgentTools
 
 @main
-struct KarmaCLI {
+struct CoreAgentCLI {
   static func main() async {
     do {
       var arguments = Array(CommandLine.arguments.dropFirst())
@@ -102,12 +102,12 @@ struct KarmaCLI {
       }
 
       let provider = FoundationModelProvider(
-        instructions: "Answer clearly and concisely. You are running inside KarmaKit."
+        instructions: "Answer clearly and concisely. You are running inside CoreAgent."
       )
       if enablesStructuredDemo {
         let output = try await provider.generateStructuredContent(
           prompt: prompt,
-          schemaName: "KarmaStructuredDemo",
+          schemaName: "CoreAgentStructuredDemo",
           schemaDescription: "A concise structured response.",
           properties: [
             "title": ToolInput(type: .string, description: "A short title."),
@@ -164,13 +164,13 @@ struct KarmaCLI {
           redactionPolicy: redactionPolicy
         )
         if enablesVerboseOutput {
-          fputs("\n\(failedRun.events.karmaDebugDescription)\n", stderr)
+          fputs("\n\(failedRun.events.coreAgentDebugDescription)\n", stderr)
         }
         throw error
       }
 
       if enablesVerboseOutput {
-        fputs("\n\(run.events.karmaDebugDescription)\n", stderr)
+        fputs("\n\(run.events.coreAgentDebugDescription)\n", stderr)
       }
       try writeArtifacts(
         run: run,
@@ -185,33 +185,33 @@ struct KarmaCLI {
   }
 
   private static func printUsage() {
-    print("Usage: karma <prompt>")
-    print("       karma --demo-tools <prompt>")
-    print("       karma --demo-tools --list-tools")
-    print("       karma --demo-tools --print-config")
-    print("       karma --demo-tools --print-discovery")
-    print("       karma --verbose --demo-tools <prompt>")
-    print("       karma --stream <prompt>")
-    print("       karma --parallel-tools --demo-tools <prompt>")
-    print("       karma --action-only --demo-tools <prompt>")
-    print("       karma --fail-on-tool-argument-error --demo-tools <prompt>")
-    print("       karma --fail-on-final-answer-rejection --demo-tools <prompt>")
-    print("       karma --trace /tmp/karma-trace.json <prompt>")
-    print("       karma --receipt /tmp/karma-receipt.json <prompt>")
-    print("       karma --verify-receipt /tmp/karma-receipt.json")
-    print("       karma --verify-receipt /tmp/karma-receipt.json --verify-trace /tmp/karma-trace.json")
-    print("       karma --no-redaction --trace /tmp/karma-trace.json <prompt>")
-    print("       karma --max-model-input-chars 12000 <prompt>")
-    print("       karma --max-tool-output-chars 4000 --demo-tools <prompt>")
-    print("       karma --max-context-messages 12 --demo-tools <prompt>")
-    print("       karma --max-memory-messages 40 --demo-tools <prompt>")
-    print("       karma --model-timeout-seconds 30 <prompt>")
-    print("       karma --run-timeout-seconds 60 <prompt>")
-    print("       karma --demo-tools --deny-tool calculate <prompt>")
-    print("       karma --structured-demo <prompt>")
-    print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
-    print("       karma --demo-tools --allow-url-host example.com <prompt>")
-    print("Example: karma Summarize tool calling in one sentence")
+    print("Usage: core-agent <prompt>")
+    print("       core-agent --demo-tools <prompt>")
+    print("       core-agent --demo-tools --list-tools")
+    print("       core-agent --demo-tools --print-config")
+    print("       core-agent --demo-tools --print-discovery")
+    print("       core-agent --verbose --demo-tools <prompt>")
+    print("       core-agent --stream <prompt>")
+    print("       core-agent --parallel-tools --demo-tools <prompt>")
+    print("       core-agent --action-only --demo-tools <prompt>")
+    print("       core-agent --fail-on-tool-argument-error --demo-tools <prompt>")
+    print("       core-agent --fail-on-final-answer-rejection --demo-tools <prompt>")
+    print("       core-agent --trace /tmp/core-agent-trace.json <prompt>")
+    print("       core-agent --receipt /tmp/core-agent-receipt.json <prompt>")
+    print("       core-agent --verify-receipt /tmp/core-agent-receipt.json")
+    print("       core-agent --verify-receipt /tmp/core-agent-receipt.json --verify-trace /tmp/core-agent-trace.json")
+    print("       core-agent --no-redaction --trace /tmp/core-agent-trace.json <prompt>")
+    print("       core-agent --max-model-input-chars 12000 <prompt>")
+    print("       core-agent --max-tool-output-chars 4000 --demo-tools <prompt>")
+    print("       core-agent --max-context-messages 12 --demo-tools <prompt>")
+    print("       core-agent --max-memory-messages 40 --demo-tools <prompt>")
+    print("       core-agent --model-timeout-seconds 30 <prompt>")
+    print("       core-agent --run-timeout-seconds 60 <prompt>")
+    print("       core-agent --demo-tools --deny-tool calculate <prompt>")
+    print("       core-agent --structured-demo <prompt>")
+    print("       core-agent --demo-tools --allow-file-dir /tmp <prompt>")
+    print("       core-agent --demo-tools --allow-url-host example.com <prompt>")
+    print("Example: core-agent Summarize tool calling in one sentence")
   }
 
   private static func makeTools(
@@ -272,7 +272,7 @@ struct KarmaCLI {
     }
 
     guard try receiptExporter.verify(receipt, for: run) else {
-      throw KarmaCLIError.receiptVerificationFailed
+      throw CoreAgentCLIError.receiptVerificationFailed
     }
 
     if tracePath == nil {
@@ -351,9 +351,9 @@ struct KarmaCLI {
       toolManifests: try tools.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
     let document = AgentDiscoveryDocument(
-      id: "com.rryam.karmakit.cli",
-      name: "Karma CLI Agent",
-      description: "Local Swift agent powered by KarmaKit.",
+      id: "com.rudrankriyam.coreagent.cli",
+      name: "CoreAgent CLI Agent",
+      description: "Local Swift agent powered by CoreAgent.",
       capabilities: completionMode.doneToolName == nil
         ? ["foundation-models", "trace-export", "receipt-export"]
         : ["foundation-models", "trace-export", "receipt-export", "action-only"],
@@ -398,12 +398,12 @@ private struct DenyNamedToolsPolicy: ToolExecutionPolicy {
 
   func authorize(_ context: ToolExecutionContext) async throws {
     if deniedToolNames.contains(context.call.name) {
-      throw KarmaCLIError.toolDenied(context.call.name)
+      throw CoreAgentCLIError.toolDenied(context.call.name)
     }
   }
 }
 
-private enum KarmaCLIError: Error, CustomStringConvertible {
+private enum CoreAgentCLIError: Error, CustomStringConvertible {
   case receiptVerificationFailed
   case toolDenied(String)
 
@@ -447,7 +447,7 @@ private extension Array where Element == String {
 }
 
 private extension Array where Element == AgentEvent {
-  var karmaDebugDescription: String {
+  var coreAgentDebugDescription: String {
     guard !isEmpty else {
       return "Events: none"
     }

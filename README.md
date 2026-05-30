@@ -1,12 +1,12 @@
-# KarmaKit
+# CoreAgent
 
-A Swift agent runtime for Apple Foundation Models.
+A Swift agent runtime for Apple's on-device AI stack.
 
-KarmaKit gives Apple-platform apps a small, inspectable foundation for tool-calling agents: Swift-native tools, structured memory, approval gates, run traces, receipts, and a Foundation Models backend that stays local to the Apple stack.
+CoreAgent gives Apple-platform apps a small, inspectable foundation for tool-calling agents: Swift-native tools, structured memory, approval gates, run traces, receipts, and a Foundation Models backend that stays local to the Apple stack.
 
-The name "Karma" comes from the Sanskrit word कर्म (karma), meaning "action" or "deed." That is the point of the library: agents that can take useful, auditable actions with minimal setup.
+It is built around Apple Foundation Models today and designed to grow with the broader local AI surface across iOS, macOS, and visionOS.
 
-## Why KarmaKit
+## Why CoreAgent
 
 - **Foundation Models first:** built for Apple's Foundation Models framework on iOS, macOS, and visionOS 26.
 - **Swift-native tools:** describe callable actions with strong metadata, input schemas, output descriptions, and stable manifests.
@@ -25,25 +25,25 @@ The name "Karma" comes from the Sanskrit word कर्म (karma), meaning "act
 
 ## Installation
 
-Add KarmaKit with Swift Package Manager:
+Add CoreAgent with Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/rryam/KarmaKit.git", branch: "main")
+.package(url: "https://github.com/rudrankriyam/CoreAgent.git", branch: "main")
 ```
 
 Then add the products you need to your target:
 
 ```swift
-.product(name: "KarmaKit", package: "KarmaKit"),
-.product(name: "KarmaKitFoundationModels", package: "KarmaKit"),
-.product(name: "KarmaKitTools", package: "KarmaKit")
+.product(name: "CoreAgent", package: "CoreAgent"),
+.product(name: "CoreAgentFoundationModels", package: "CoreAgent"),
+.product(name: "CoreAgentTools", package: "CoreAgent")
 ```
 
 ## Quick Start
 
 ```swift
-import KarmaKit
-import KarmaKitFoundationModels
+import CoreAgent
+import CoreAgentFoundationModels
 
 let provider = FoundationModelProvider(
   instructions: "Answer clearly and use tools when they are useful."
@@ -58,14 +58,14 @@ let run = try await agent.run("Explain tool calling in one sentence.")
 print(run.finalAnswer)
 ```
 
-`ToolCallingAgent` keeps a run loop around `FoundationModelProvider`. The model can either return a final answer or request one or more tool calls, and KarmaKit records each step in memory and events.
+`ToolCallingAgent` keeps a run loop around `FoundationModelProvider`. The model can either return a final answer or request one or more tool calls, and CoreAgent records each step in memory and events.
 
 ## Add Tools
 
 Tools are plain Swift types that conform to `Tool`, or lightweight closures when that is enough:
 
 ```swift
-import KarmaKit
+import CoreAgent
 
 let slugify = ClosureTool(
   name: "slugify",
@@ -98,10 +98,10 @@ Each tool can publish a `ToolManifest` containing its name, description, inputs,
 
 ## Foundation Models
 
-`KarmaKitFoundationModels` provides the Apple-native backend:
+`CoreAgentFoundationModels` provides the Apple-native backend:
 
 - `FoundationModelProvider` implements `ModelProvider` and `StreamingModelProvider`.
-- `FoundationModelToolAdapter` bridges KarmaKit tools into Foundation Models tools.
+- `FoundationModelToolAdapter` bridges CoreAgent tools into Foundation Models tools.
 - `FoundationModelSchemaAdapter` converts `ToolInput` trees into Foundation Models schemas.
 - `FoundationModelToolAudit` records Foundation Models-native tool authorization events.
 
@@ -127,45 +127,45 @@ let output = try await provider.generateStructuredContent(
 
 ## CLI
 
-KarmaKit ships with a `karma` executable for local testing:
+CoreAgent ships with a `core-agent` executable for local testing:
 
 ```bash
-swift run karma "Explain tool calling in one sentence."
-swift run karma --stream "Write one sentence about local agents."
-swift run karma --structured-demo "Summarize Foundation Models agents."
+swift run core-agent "Explain tool calling in one sentence."
+swift run core-agent --stream "Write one sentence about local agents."
+swift run core-agent --structured-demo "Summarize Foundation Models agents."
 ```
 
 Try tools, manifests, and discovery output:
 
 ```bash
-swift run karma --demo-tools "Use calculate to evaluate 2 + 3 * 5. Return only the result."
-swift run karma --demo-tools --list-tools
-swift run karma --demo-tools --print-config
-swift run karma --demo-tools --print-discovery
+swift run core-agent --demo-tools "Use calculate to evaluate 2 + 3 * 5. Return only the result."
+swift run core-agent --demo-tools --list-tools
+swift run core-agent --demo-tools --print-config
+swift run core-agent --demo-tools --print-discovery
 ```
 
 Capture and verify run artifacts:
 
 ```bash
-swift run karma --trace /tmp/karma-trace.json --receipt /tmp/karma-receipt.json "Explain tool calling."
-swift run karma --verify-receipt /tmp/karma-receipt.json --verify-trace /tmp/karma-trace.json
+swift run core-agent --trace /tmp/core-agent-trace.json --receipt /tmp/core-agent-receipt.json "Explain tool calling."
+swift run core-agent --verify-receipt /tmp/core-agent-receipt.json --verify-trace /tmp/core-agent-trace.json
 ```
 
 Bound long runs and tool-heavy workflows:
 
 ```bash
-swift run karma --model-timeout-seconds 30 "Answer with a bounded model call."
-swift run karma --run-timeout-seconds 60 "Answer within a bounded run."
-swift run karma --max-model-input-chars 12000 "Summarize this request."
-swift run karma --max-tool-output-chars 4000 --demo-tools "Search files and summarize the matches."
-swift run karma --max-context-messages 12 --max-memory-messages 40 --demo-tools "Answer with bounded context."
+swift run core-agent --model-timeout-seconds 30 "Answer with a bounded model call."
+swift run core-agent --run-timeout-seconds 60 "Answer within a bounded run."
+swift run core-agent --max-model-input-chars 12000 "Summarize this request."
+swift run core-agent --max-tool-output-chars 4000 --demo-tools "Search files and summarize the matches."
+swift run core-agent --max-context-messages 12 --max-memory-messages 40 --demo-tools "Answer with bounded context."
 ```
 
 Use allowlisted local files and hosts:
 
 ```bash
-swift run karma --demo-tools --allow-file-dir /tmp "Read /tmp/example.txt and summarize it."
-swift run karma --demo-tools --allow-url-host example.com "Fetch https://example.com and summarize it."
+swift run core-agent --demo-tools --allow-file-dir /tmp "Read /tmp/example.txt and summarize it."
+swift run core-agent --demo-tools --allow-url-host example.com "Fetch https://example.com and summarize it."
 ```
 
 ## Core Building Blocks
@@ -184,7 +184,7 @@ swift run karma --demo-tools --allow-url-host example.com "Fetch https://example
 
 ## Trusted Tools and Context
 
-KarmaKit can persist an agent configuration and verify that tools or context providers have not drifted before the agent runs again:
+CoreAgent can persist an agent configuration and verify that tools or context providers have not drifted before the agent runs again:
 
 ```swift
 let tools: [any Tool] = [slugify]
@@ -231,7 +231,7 @@ Policies compose, so an app can combine allowlists, approved manifests, external
 
 ## Memory and Context
 
-KarmaKit separates retained memory from injected context:
+CoreAgent separates retained memory from injected context:
 
 - `AgentMemory` records system, user, assistant, and tool messages plus action steps and events.
 - `FileAgentMemoryStore` saves and reloads memory as JSON.
@@ -241,7 +241,7 @@ KarmaKit separates retained memory from injected context:
 
 ```swift
 let memoryStore = FileAgentMemoryStore(
-  fileURL: URL(fileURLWithPath: "/tmp/karma-memory.json")
+  fileURL: URL(fileURLWithPath: "/tmp/core-agent-memory.json")
 )
 
 let agent = ToolCallingAgent(
@@ -265,12 +265,12 @@ let run = try await agent.run("Use the available tools and summarize the result.
 
 try AgentTraceExporter().write(
   run,
-  to: URL(fileURLWithPath: "/tmp/karma-trace.json")
+  to: URL(fileURLWithPath: "/tmp/core-agent-trace.json")
 )
 
 try AgentReceiptExporter().write(
   run,
-  to: URL(fileURLWithPath: "/tmp/karma-receipt.json")
+  to: URL(fileURLWithPath: "/tmp/core-agent-receipt.json")
 )
 ```
 
@@ -278,10 +278,10 @@ Traces are useful for debugging and support. Receipts contain a hash chain that 
 
 ## Package Layout
 
-- `KarmaKit`: core agent loop, tool contracts, memory, policies, traces, receipts, and run metrics.
-- `KarmaKitFoundationModels`: Apple Foundation Models provider and schema/tool adapters.
-- `KarmaKitTools`: reusable tools for time, arithmetic, allowlisted file reads, local text search, and allowlisted URL fetches.
-- `karma`: local CLI for running prompts, trying tools, printing manifests, and exporting artifacts.
+- `CoreAgent`: core agent loop, tool contracts, memory, policies, traces, receipts, and run metrics.
+- `CoreAgentFoundationModels`: Apple Foundation Models provider and schema/tool adapters.
+- `CoreAgentTools`: reusable tools for time, arithmetic, allowlisted file reads, local text search, and allowlisted URL fetches.
+- `core-agent`: local CLI for running prompts, trying tools, printing manifests, and exporting artifacts.
 
 ## Roadmap
 
@@ -295,4 +295,4 @@ Traces are useful for debugging and support. Receipts contain a hash chain that 
 
 Issues, ideas, and pull requests are welcome. Keep contributions focused on Apple-native agent workflows, inspectable execution, and APIs that feel natural in Swift apps.
 
-[![Star History Chart](https://api.star-history.com/svg?repos=rryam/KarmaKit&type=Date)](https://star-history.com/#rryam/KarmaKit&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=rudrankriyam/CoreAgent&type=Date)](https://star-history.com/#rudrankriyam/CoreAgent&Date)

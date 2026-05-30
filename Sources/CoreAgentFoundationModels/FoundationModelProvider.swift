@@ -1,6 +1,6 @@
 import Foundation
 import FoundationModels
-import KarmaKit
+import CoreAgent
 
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
@@ -58,7 +58,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     self.toolExecutionPolicy = toolExecutionPolicy
   }
 
-  public func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  public func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     try validateAvailability()
 
     let audit = FoundationModelToolAudit()
@@ -99,7 +99,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
 
   public func stream(
     messages: [AgentMessage],
-    tools: [any KarmaKit.Tool],
+    tools: [any CoreAgent.Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
     try validateAvailability()
@@ -203,7 +203,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     _ error: any Error,
     audit: FoundationModelToolAudit,
     session: LanguageModelSession,
-    tools: [any KarmaKit.Tool]
+    tools: [any CoreAgent.Tool]
   ) async throws {
     let events = try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools)
     guard !events.isEmpty else {
@@ -250,7 +250,7 @@ public actor FoundationModelToolAudit {
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 enum FoundationModelTranscriptEvents {
-  static func makeEvents(from transcript: Transcript, tools: [any KarmaKit.Tool]) throws -> [AgentEvent] {
+  static func makeEvents(from transcript: Transcript, tools: [any CoreAgent.Tool]) throws -> [AgentEvent] {
     let manifestsByName = try tools.reduce(into: [String: ToolManifest]()) { partialResult, tool in
       partialResult[tool.name] = try ToolManifest(tool: tool)
     }
@@ -270,7 +270,7 @@ enum FoundationModelTranscriptEvents {
           }
         )
       case .toolOutput(let toolOutput):
-        let output = toolOutput.segments.karmaJoinedText()
+        let output = toolOutput.segments.coreAgentJoinedText()
         events.append(
           AgentEvent(
             kind: .toolCallFinished,
@@ -292,7 +292,7 @@ enum FoundationModelTranscriptEvents {
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 private extension [Transcript.Segment] {
-  func karmaJoinedText() -> String {
+  func coreAgentJoinedText() -> String {
     map { segment in
       switch segment {
       case .text(let text):
@@ -325,14 +325,14 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
   public typealias Arguments = GeneratedContent
   public typealias Output = String
 
-  private let tool: any KarmaKit.Tool
+  private let tool: any CoreAgent.Tool
   private let toolExecutionPolicy: any ToolExecutionPolicy
   private let task: String
   private let audit: FoundationModelToolAudit?
   public let parameters: GenerationSchema
 
   public init(
-    tool: any KarmaKit.Tool,
+    tool: any CoreAgent.Tool,
     toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy(),
     task: String = "",
     audit: FoundationModelToolAudit? = nil
@@ -401,7 +401,7 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
     }
   }
 
-  private static func decode(_ content: GeneratedContent, for tool: any KarmaKit.Tool) throws -> [String: String] {
+  private static func decode(_ content: GeneratedContent, for tool: any CoreAgent.Tool) throws -> [String: String] {
     var arguments: [String: String] = [:]
 
     for (name, input) in tool.inputs {
@@ -434,7 +434,7 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 public enum FoundationModelSchemaAdapter {
-  public static func makeToolParameters(for tool: any KarmaKit.Tool) throws -> GenerationSchema {
+  public static func makeToolParameters(for tool: any CoreAgent.Tool) throws -> GenerationSchema {
     let root = try makeObjectSchema(
       name: "\(tool.name)Arguments",
       description: "Arguments for \(tool.name).",
@@ -454,13 +454,13 @@ public enum FoundationModelSchemaAdapter {
         try DynamicGenerationSchema.Property(
           name: name,
           description: input.description,
-          schema: dynamicSchema(for: input, nameHint: name.karmaSchemaName),
+          schema: dynamicSchema(for: input, nameHint: name.coreAgentSchemaName),
           isOptional: !input.isRequired
         )
       }
 
     return DynamicGenerationSchema(
-      name: name.karmaSchemaName,
+      name: name.coreAgentSchemaName,
       description: description,
       properties: dynamicProperties
     )
@@ -497,7 +497,7 @@ public enum FoundationModelSchemaAdapter {
 }
 
 private extension String {
-  var karmaSchemaName: String {
+  var coreAgentSchemaName: String {
     let parts = split { !$0.isLetter && !$0.isNumber }
     let name = parts.map { part in
       part.prefix(1).uppercased() + part.dropFirst()

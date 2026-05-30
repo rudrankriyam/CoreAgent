@@ -1,7 +1,7 @@
 import Foundation
 import Testing
-import KarmaKit
-@testable import KarmaKitTools
+import CoreAgent
+@testable import CoreAgentTools
 
 @Test func currentTimeToolReturnsISO8601Date() async throws {
   let tool = CurrentTimeTool(now: { Date(timeIntervalSince1970: 0) })
@@ -20,7 +20,7 @@ import KarmaKit
 @Test func mathToolRejectsDivisionByZero() async throws {
   let tool = MathTool()
 
-  await #expect(throws: KarmaToolError.divisionByZero) {
+  await #expect(throws: CoreAgentToolError.divisionByZero) {
     _ = try await tool.call(arguments: ["expression": "10 / 0"])
   }
 }
@@ -28,7 +28,7 @@ import KarmaKit
 @Test func mathToolRejectsUnsupportedExpression() async throws {
   let tool = MathTool()
 
-  await #expect(throws: KarmaToolError.unsupportedExpression("2 ** 8")) {
+  await #expect(throws: CoreAgentToolError.unsupportedExpression("2 ** 8")) {
     _ = try await tool.call(arguments: ["expression": "2 ** 8"])
   }
 }
@@ -47,7 +47,7 @@ import KarmaKit
 @Test func urlFetchToolRejectsNonHTTPSByDefault() async throws {
   let tool = URLFetchTool()
 
-  await #expect(throws: KarmaToolError.urlSchemeNotAllowed("http")) {
+  await #expect(throws: CoreAgentToolError.urlSchemeNotAllowed("http")) {
     _ = try await tool.call(arguments: ["url": "http://example.com"])
   }
 }
@@ -65,7 +65,7 @@ import KarmaKit
 @Test func urlFetchToolRejectsHostsOutsideAllowlist() async throws {
   let tool = URLFetchTool(allowedHosts: ["example.com"])
 
-  await #expect(throws: KarmaToolError.urlHostNotAllowed("evil.example")) {
+  await #expect(throws: CoreAgentToolError.urlHostNotAllowed("evil.example")) {
     _ = try await tool.call(arguments: ["url": "https://evil.example"])
   }
 }
@@ -83,7 +83,7 @@ import KarmaKit
     "http://[::1]/",
     "http://[fd00::1]/"
   ] {
-    await #expect(throws: KarmaToolError.urlHostBlocked(URLComponents(string: blockedURL)?.host?.lowercased() ?? "")) {
+    await #expect(throws: CoreAgentToolError.urlHostBlocked(URLComponents(string: blockedURL)?.host?.lowercased() ?? "")) {
       _ = try await tool.call(arguments: ["url": blockedURL])
     }
   }
@@ -93,21 +93,21 @@ import KarmaKit
   let largeClient = URLClientProbe(response: URLFetchTool.Response(statusCode: 200, body: Data("abcdef".utf8)))
   let largeTool = URLFetchTool(maximumBytes: 3, client: largeClient.fetch)
 
-  await #expect(throws: KarmaToolError.responseTooLarge(url: "https://example.com", maximumBytes: 3)) {
+  await #expect(throws: CoreAgentToolError.responseTooLarge(url: "https://example.com", maximumBytes: 3)) {
     _ = try await largeTool.call(arguments: ["url": "https://example.com"])
   }
 
   let statusClient = URLClientProbe(response: URLFetchTool.Response(statusCode: 500, body: Data("nope".utf8)))
   let statusTool = URLFetchTool(client: statusClient.fetch)
 
-  await #expect(throws: KarmaToolError.invalidHTTPStatus(url: "https://example.com", statusCode: 500)) {
+  await #expect(throws: CoreAgentToolError.invalidHTTPStatus(url: "https://example.com", statusCode: 500)) {
     _ = try await statusTool.call(arguments: ["url": "https://example.com"])
   }
 }
 
 @Test func fileReadToolReadsAllowedFile() async throws {
   let directory = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitToolsTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentToolsTests-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
   let fileURL = directory.appendingPathComponent("note.txt")
   try "hello local agent".write(to: fileURL, atomically: true, encoding: .utf8)
@@ -120,9 +120,9 @@ import KarmaKit
 
 @Test func fileReadToolRejectsPathOutsideAllowedDirectories() async throws {
   let allowedDirectory = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitToolsTests-allowed-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentToolsTests-allowed-\(UUID().uuidString)")
   let outsideDirectory = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitToolsTests-outside-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentToolsTests-outside-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: allowedDirectory, withIntermediateDirectories: true)
   try FileManager.default.createDirectory(at: outsideDirectory, withIntermediateDirectories: true)
   let fileURL = outsideDirectory.appendingPathComponent("secret.txt")
@@ -130,21 +130,21 @@ import KarmaKit
 
   let tool = FileReadTool(allowedDirectories: [allowedDirectory])
 
-  await #expect(throws: KarmaToolError.pathNotAllowed(fileURL.standardizedFileURL.resolvingSymlinksInPath().path)) {
+  await #expect(throws: CoreAgentToolError.pathNotAllowed(fileURL.standardizedFileURL.resolvingSymlinksInPath().path)) {
     _ = try await tool.call(arguments: ["path": fileURL.path])
   }
 }
 
 @Test func fileReadToolRejectsLargeFiles() async throws {
   let directory = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitToolsTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentToolsTests-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
   let fileURL = directory.appendingPathComponent("large.txt")
   try "abcdef".write(to: fileURL, atomically: true, encoding: .utf8)
 
   let tool = FileReadTool(allowedDirectories: [directory], maximumBytes: 3)
 
-  await #expect(throws: KarmaToolError.fileTooLarge(path: fileURL.standardizedFileURL.resolvingSymlinksInPath().path, maximumBytes: 3)) {
+  await #expect(throws: CoreAgentToolError.fileTooLarge(path: fileURL.standardizedFileURL.resolvingSymlinksInPath().path, maximumBytes: 3)) {
     _ = try await tool.call(arguments: ["path": fileURL.path])
   }
 }
@@ -167,7 +167,7 @@ import KarmaKit
   let directory = try makeTemporaryDirectory()
   let fileURL = directory.appendingPathComponent("notes.md")
   try """
-  KarmaKit builds local agents.
+  CoreAgent builds local agents.
   Foundation Models can use tools.
   Local agents need memory.
   """.write(to: fileURL, atomically: true, encoding: .utf8)
@@ -179,7 +179,7 @@ import KarmaKit
   #expect(results.count == 2)
   #expect(results.first?.path.hasSuffix("/\(fileURL.lastPathComponent)") == true)
   #expect(results.first?.line == 1)
-  #expect(results.first?.excerpt == "KarmaKit builds local agents.")
+  #expect(results.first?.excerpt == "CoreAgent builds local agents.")
 }
 
 @Test func searchFilesToolRespectsMaximumResults() async throws {
@@ -223,7 +223,7 @@ import KarmaKit
 @Test func searchFilesToolRejectsShortQueries() async throws {
   let tool = SearchFilesTool(allowedDirectories: [try makeTemporaryDirectory()])
 
-  await #expect(throws: KarmaToolError.queryTooShort) {
+  await #expect(throws: CoreAgentToolError.queryTooShort) {
     _ = try await tool.call(arguments: ["query": "a"])
   }
 }
@@ -231,7 +231,7 @@ import KarmaKit
 @Test func agentCanUseSearchFilesToolThroughToolLoop() async throws {
   let directory = try makeTemporaryDirectory()
   let fileURL = directory.appendingPathComponent("context.md")
-  try "KarmaKit has local search.".write(to: fileURL, atomically: true, encoding: .utf8)
+  try "CoreAgent has local search.".write(to: fileURL, atomically: true, encoding: .utf8)
   let searchTool = SearchFilesTool(allowedDirectories: [directory])
   let model = ScriptedModel(outputs: [
     .toolCalls([
@@ -242,7 +242,7 @@ import KarmaKit
   let agent = ToolCallingAgent(tools: [searchTool], model: model)
   let run = try await agent.run("Find local search")
 
-  #expect(run.steps.first?.toolResults.first?.output.contains("KarmaKit has local search.") == true)
+  #expect(run.steps.first?.toolResults.first?.output.contains("CoreAgent has local search.") == true)
   #expect(run.finalAnswer == "Found local search context.")
 }
 
@@ -264,7 +264,7 @@ private actor URLClientProbe {
 
 private func makeTemporaryDirectory() throws -> URL {
   let directory = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitToolsTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentToolsTests-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
   return directory
 }

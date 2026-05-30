@@ -1,8 +1,8 @@
 import Testing
 import FoundationModels
 import Foundation
-@testable import KarmaKit
-@testable import KarmaKitFoundationModels
+@testable import CoreAgent
+@testable import CoreAgentFoundationModels
 
 @Test func toolCallingAgentRunsToolBeforeFinalAnswer() async throws {
   let weatherTool = ClosureTool(
@@ -126,7 +126,7 @@ import Foundation
     limits: AgentLimits(maximumToolCallsPerStep: 1)
   )
 
-  await #expect(throws: KarmaError.tooManyToolCalls(stepNumber: 1, requested: 2, maximum: 1)) {
+  await #expect(throws: CoreAgentError.tooManyToolCalls(stepNumber: 1, requested: 2, maximum: 1)) {
     _ = try await agent.run("Run both tools")
   }
 
@@ -158,7 +158,7 @@ import Foundation
     toolCallExecutionMode: .parallel
   )
 
-  await #expect(throws: KarmaError.tooManyToolCalls(stepNumber: 1, requested: 2, maximum: 1)) {
+  await #expect(throws: CoreAgentError.tooManyToolCalls(stepNumber: 1, requested: 2, maximum: 1)) {
     _ = try await agent.run("Run both tools")
   }
 
@@ -315,7 +315,7 @@ import Foundation
     completionMode: .actionOnly(doneToolName: "done")
   )
 
-  await #expect(throws: KarmaError.finalAnswerRejected(
+  await #expect(throws: CoreAgentError.finalAnswerRejected(
     "This run completes through tool actions. Call 'done' after completing the required actions."
   )) {
     _ = try await agent.run("Complete through actions")
@@ -333,17 +333,17 @@ import Foundation
     "direct: \(arguments["query", default: ""])"
   }
   let model = ScriptedModel(outputs: [
-    .toolCalls([ToolCall(id: "call_1", name: "lookup", arguments: ["query": "karma"])]),
+    .toolCalls([ToolCall(id: "call_1", name: "lookup", arguments: ["query": "core agent"])]),
     .finalAnswer("should not be requested")
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model)
 
-  let run = try await agent.run("Lookup karma")
+  let run = try await agent.run("Lookup core agent")
 
-  #expect(run.finalAnswer == "direct: karma")
+  #expect(run.finalAnswer == "direct: core agent")
   #expect(run.steps.count == 1)
-  #expect(run.steps.first?.toolResults.first?.output == "direct: karma")
-  #expect(run.events.contains { $0.kind == .finalAnswerAccepted && $0.message == "direct: karma" })
+  #expect(run.steps.first?.toolResults.first?.output == "direct: core agent")
+  #expect(run.events.contains { $0.kind == .finalAnswerAccepted && $0.message == "direct: core agent" })
 }
 
 @Test func directReturnToolCanBeDisabled() async throws {
@@ -406,7 +406,7 @@ import Foundation
     arguments["text", default: ""]
   }
 
-  await #expect(throws: KarmaError.invalidToolArguments(tool: "echo", expected: ["text"])) {
+  await #expect(throws: CoreAgentError.invalidToolArguments(tool: "echo", expected: ["text"])) {
     _ = try await tool.call(arguments: [:])
   }
 }
@@ -428,7 +428,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
-  await #expect(throws: KarmaError.invalidToolArguments(tool: "echo", expected: ["text"])) {
+  await #expect(throws: CoreAgentError.invalidToolArguments(tool: "echo", expected: ["text"])) {
     _ = try await agent.run("Echo text")
   }
 
@@ -450,7 +450,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
-  await #expect(throws: KarmaError.unexpectedToolArguments(tool: "current", unexpected: ["extra"])) {
+  await #expect(throws: CoreAgentError.unexpectedToolArguments(tool: "current", unexpected: ["extra"])) {
     _ = try await agent.run("Call current")
   }
 
@@ -478,7 +478,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
-  await #expect(throws: KarmaError.invalidToolArgumentValue(
+  await #expect(throws: CoreAgentError.invalidToolArgumentValue(
     tool: "set_count",
     argument: "count",
     expectedType: "integer",
@@ -597,7 +597,7 @@ import Foundation
           "count": "3",
           "score": "4.5",
           "enabled": "true",
-          "payload": #"{"name":"karma"}"#,
+          "payload": #"{"name":"core agent"}"#,
           "items": #"["a","b"]"#
         ]
       )
@@ -635,7 +635,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
-  await #expect(throws: KarmaError.invalidToolArguments(tool: "create_trip", expected: ["traveler.age"])) {
+  await #expect(throws: CoreAgentError.invalidToolArguments(tool: "create_trip", expected: ["traveler.age"])) {
     _ = try await agent.run("Create trip")
   }
 
@@ -663,7 +663,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
-  await #expect(throws: KarmaError.unexpectedToolArguments(tool: "create_trip", unexpected: ["traveler.extra"])) {
+  await #expect(throws: CoreAgentError.unexpectedToolArguments(tool: "create_trip", unexpected: ["traveler.extra"])) {
     _ = try await agent.run("Create trip")
   }
 
@@ -689,7 +689,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
-  await #expect(throws: KarmaError.invalidToolArgumentValue(
+  await #expect(throws: CoreAgentError.invalidToolArgumentValue(
     tool: "sum",
     argument: "values[1]",
     expectedType: "integer",
@@ -756,7 +756,7 @@ import Foundation
   let firstTool = ClosureTool(name: "echo", description: "Echoes text.", inputs: [:]) { _ in "one" }
   let secondTool = ClosureTool(name: "echo", description: "Echoes text.", inputs: [:]) { _ in "two" }
 
-  #expect(throws: KarmaError.duplicateToolName("echo")) {
+  #expect(throws: CoreAgentError.duplicateToolName("echo")) {
     _ = try ToolCallingAgent(
       tools: [firstTool, secondTool],
       model: ScriptedModel(outputs: []),
@@ -776,7 +776,7 @@ import Foundation
 
   let agent = ToolCallingAgent(tools: [tool], model: model, maxSteps: 1)
 
-  await #expect(throws: KarmaError.maxStepsReached(1)) {
+  await #expect(throws: CoreAgentError.maxStepsReached(1)) {
     _ = try await agent.run("Keep going")
   }
 }
@@ -787,7 +787,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [], model: model, maxSteps: 0)
 
-  await #expect(throws: KarmaError.maxStepsReached(0)) {
+  await #expect(throws: CoreAgentError.maxStepsReached(0)) {
     _ = try await agent.run("Do nothing")
   }
   #expect(agent.memory.steps.isEmpty)
@@ -800,7 +800,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [], model: model)
 
-  await #expect(throws: KarmaError.missingTool("unknown_tool")) {
+  await #expect(throws: CoreAgentError.missingTool("unknown_tool")) {
     _ = try await agent.run("Use a missing tool")
   }
 }
@@ -989,7 +989,7 @@ import Foundation
     toolExecutionPolicy: TrustedToolExecutionPolicy(approvedManifests: [try ToolManifest(tool: approvedTool)])
   )
 
-  await #expect(throws: KarmaError.untrustedTool(name: "lookup", digest: changedDigest)) {
+  await #expect(throws: CoreAgentError.untrustedTool(name: "lookup", digest: changedDigest)) {
     _ = try await agent.run("Use lookup")
   }
 }
@@ -1057,7 +1057,7 @@ import Foundation
     )
   )
 
-  await #expect(throws: KarmaError.untrustedToolIdentity(name: "forecast", serverID: "weather-service")) {
+  await #expect(throws: CoreAgentError.untrustedToolIdentity(name: "forecast", serverID: "weather-service")) {
     _ = try await agent.run("Use forecast")
   }
 }
@@ -1141,7 +1141,7 @@ import Foundation
     )
   )
 
-  await #expect(throws: KarmaError.toolDenied(name: "delete_record", reason: "User declined.")) {
+  await #expect(throws: CoreAgentError.toolDenied(name: "delete_record", reason: "User declined.")) {
     _ = try await agent.run("Delete the record")
   }
 
@@ -1193,7 +1193,7 @@ import Foundation
     toolExecutionPolicy: ToolNameAllowlistExecutionPolicy(["lookup"])
   )
 
-  await #expect(throws: KarmaError.toolDenied(name: "delete_file", reason: "Tool name is not allowed.")) {
+  await #expect(throws: CoreAgentError.toolDenied(name: "delete_file", reason: "Tool name is not allowed.")) {
     _ = try await agent.run("Use delete_file")
   }
 
@@ -1234,15 +1234,15 @@ import Foundation
     configuration: decoded,
     tools: [tool],
     model: ScriptedModel(outputs: [
-      .toolCalls([ToolCall(id: "call_1", name: "lookup", arguments: ["query": "karma"])]),
-      .finalAnswer("found karma")
+      .toolCalls([ToolCall(id: "call_1", name: "lookup", arguments: ["query": "core agent"])]),
+      .finalAnswer("found core agent")
     ])
   )
 
-  let run = try await rebuiltAgent.run("Lookup karma")
+  let run = try await rebuiltAgent.run("Lookup core agent")
 
   #expect(decoded == configuration)
-  #expect(run.finalAnswer == "found karma")
+  #expect(run.finalAnswer == "found core agent")
   #expect(rebuiltAgent.maxSteps == 3)
   #expect(rebuiltAgent.resetsMemoryBeforeRun == false)
   #expect(rebuiltAgent.limits.maximumToolOutputCharacters == 100)
@@ -1277,7 +1277,7 @@ import Foundation
     name: "project_context",
     description: "Project facts.",
     messages: [
-      AgentMessage(role: .system, content: "KarmaKit uses Foundation Models.")
+      AgentMessage(role: .system, content: "CoreAgent uses Foundation Models.")
     ]
   )
   let sourceAgent = ToolCallingAgent(
@@ -1302,7 +1302,7 @@ import Foundation
   #expect(decoded == configuration)
   #expect(decoded.contextProviderManifests.map(\.name) == ["project_context"])
   #expect(run.finalAnswer == "done")
-  #expect(capturedMessages.first?.content.contains("KarmaKit uses Foundation Models.") == true)
+  #expect(capturedMessages.first?.content.contains("CoreAgent uses Foundation Models.") == true)
   #expect(run.events.contains { $0.kind == .contextProviderAuthorized })
 }
 
@@ -1328,7 +1328,7 @@ import Foundation
     contextProviderManifests: [try AgentContextProviderManifest(provider: approvedProvider)]
   )
 
-  #expect(throws: KarmaError.configurationMismatch(
+  #expect(throws: CoreAgentError.configurationMismatch(
     "Configured context providers [project_context] do not match runtime context providers [project_context]."
   )) {
     try configuration.verifyContextProviders([changedProvider])
@@ -1361,7 +1361,7 @@ import Foundation
   provider.description = "Changed context."
   let changedManifest = try AgentContextProviderManifest(provider: provider)
 
-  await #expect(throws: KarmaError.untrustedContextProvider(name: "project_context", digest: changedManifest.digest)) {
+  await #expect(throws: CoreAgentError.untrustedContextProvider(name: "project_context", digest: changedManifest.digest)) {
     _ = try await agent.run("Continue")
   }
 
@@ -1392,7 +1392,7 @@ import Foundation
   tool.description = "Looks up private data."
   let changedDigest = try ToolManifest(tool: tool).digest
 
-  await #expect(throws: KarmaError.untrustedTool(name: "lookup", digest: changedDigest)) {
+  await #expect(throws: CoreAgentError.untrustedTool(name: "lookup", digest: changedDigest)) {
     _ = try await agent.run("Use lookup")
   }
   #expect(agent.memory.events.contains { $0.kind == .toolCallDenied })
@@ -1589,7 +1589,7 @@ import Foundation
     toolManifests: [try ToolManifest(tool: approvedTool)]
   )
 
-  #expect(throws: KarmaError.configurationMismatch(
+  #expect(throws: CoreAgentError.configurationMismatch(
     "Configured tools [lookup] do not match runtime tools [lookup]."
   )) {
     try configuration.verifyTools([changedTool])
@@ -1610,7 +1610,7 @@ import Foundation
     toolManifests: [try ToolManifest(tool: approvedTool)]
   )
 
-  #expect(throws: KarmaError.configurationMismatch(
+  #expect(throws: CoreAgentError.configurationMismatch(
     "Configured tools [lookup] do not match runtime tools []."
   )) {
     try configuration.verifyTools([])
@@ -1629,7 +1629,7 @@ import Foundation
   #expect(memory.messages.last?.toolCallID == "call_1")
 }
 
-@Test func noInputFoundationToolAdapterCanCallKarmaTool() async throws {
+@Test func noInputFoundationToolAdapterCanCallCoreAgentTool() async throws {
   let tool = ClosureTool(
     name: "current_time",
     description: "Returns time.",
@@ -1646,7 +1646,7 @@ import Foundation
   #expect(output == "2026-05-30T13:00:00Z")
 }
 
-@Test func foundationToolAdapterAuthorizesBeforeCallingKarmaTool() async throws {
+@Test func foundationToolAdapterAuthorizesBeforeCallingCoreAgentTool() async throws {
   let counter = CallCounter()
   let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
     await counter.increment()
@@ -1718,14 +1718,14 @@ import Foundation
   let adapter = try FoundationModelToolAdapter(tool: tool)
   let output = try await adapter.call(
     arguments: GeneratedContent(properties: [
-      "name": "Karma",
+      "name": "CoreAgent",
       "count": 3,
       "score": 2.5,
       "enabled": true
     ])
   )
 
-  #expect(output == "Karma|3|2.5|true")
+  #expect(output == "CoreAgent|3|2.5|true")
 }
 
 @Test func foundationToolAdapterRejectsUnsupportedInputTypes() async throws {
@@ -1825,7 +1825,7 @@ import Foundation
         Transcript.ToolCall(
           id: "call_1",
           toolName: "lookup",
-          arguments: GeneratedContent(properties: ["query": "karma"])
+          arguments: GeneratedContent(properties: ["query": "core agent"])
         )
       ])
     ),
@@ -1935,7 +1935,7 @@ import Foundation
     name: "project_context",
     description: "Project context.",
     messages: [
-      AgentMessage(role: .system, content: "Project fact: KarmaKit uses Foundation Models.")
+      AgentMessage(role: .system, content: "Project fact: CoreAgent uses Foundation Models.")
     ]
   )
   let agent = ToolCallingAgent(tools: [], model: model, contextProviders: [provider])
@@ -1945,9 +1945,9 @@ import Foundation
 
   #expect(run.finalAnswer == "done")
   #expect(capturedMessages.first?.role == .system)
-  #expect(capturedMessages.first?.content.contains("Project fact: KarmaKit uses Foundation Models.") == true)
+  #expect(capturedMessages.first?.content.contains("Project fact: CoreAgent uses Foundation Models.") == true)
   #expect(capturedMessages.last?.content == "Continue")
-  #expect(!run.messages.contains { $0.content == "Project fact: KarmaKit uses Foundation Models." })
+  #expect(!run.messages.contains { $0.content == "Project fact: CoreAgent uses Foundation Models." })
   #expect(run.events.contains { $0.kind == .contextProviderAuthorized && $0.contextProviderManifest?.name == "project_context" })
   #expect(run.events.contains { $0.kind == .contextProvided && $0.message?.contains("project_context") == true })
 }
@@ -1974,7 +1974,7 @@ import Foundation
     )
   )
 
-  await #expect(throws: KarmaError.untrustedContextProvider(name: "project_context", digest: changedManifest.digest)) {
+  await #expect(throws: CoreAgentError.untrustedContextProvider(name: "project_context", digest: changedManifest.digest)) {
     _ = try await agent.run("Continue")
   }
 
@@ -2017,7 +2017,7 @@ import Foundation
   do {
     _ = try await agent.run("Run")
     Issue.record("Expected model input limit failure")
-  } catch KarmaError.modelInputTooLarge(let characters, let maximum) {
+  } catch CoreAgentError.modelInputTooLarge(let characters, let maximum) {
     #expect(characters > maximum)
     #expect(maximum == 20)
   } catch {
@@ -2149,7 +2149,7 @@ import Foundation
   do {
     _ = try await agent.run(String(repeating: "large-input ", count: 20))
     Issue.record("Expected model input limit failure")
-  } catch KarmaError.modelInputTooLarge(let characters, let maximum) {
+  } catch CoreAgentError.modelInputTooLarge(let characters, let maximum) {
     #expect(characters > maximum)
     #expect(maximum == 20)
   } catch {
@@ -2161,7 +2161,7 @@ import Foundation
   #expect(snapshot.finalAnswer == "")
   #expect(snapshot.messages.count == agent.memory.messages.count)
   #expect(snapshot.events.last?.kind == .runFailed)
-  #expect(snapshot.events.last?.errorType == "KarmaKit.KarmaError")
+  #expect(snapshot.events.last?.errorType == "CoreAgent.CoreAgentError")
   #expect(snapshot.startedAt == startedAt)
   #expect(snapshot.endedAt == endedAt)
   #expect(snapshot.metrics.isFailed)
@@ -2173,7 +2173,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [], model: model)
 
-  await #expect(throws: KarmaError.finalAnswerRejected("Final answer was empty.")) {
+  await #expect(throws: CoreAgentError.finalAnswerRejected("Final answer was empty.")) {
     _ = try await agent.run("Return nothing")
   }
   #expect(agent.memory.events.last?.kind == .runFailed)
@@ -2189,7 +2189,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model, finalAnswerRecoveryMode: .fail)
 
-  await #expect(throws: KarmaError.finalAnswerRejected(
+  await #expect(throws: CoreAgentError.finalAnswerRejected(
     "Final answer repeated instruction-like tool output: ignore previous."
   )) {
     _ = try await agent.run("Look up the data")
@@ -2279,7 +2279,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [], model: model, finalAnswerRecoveryMode: .fail)
 
-  await #expect(throws: KarmaError.finalAnswerRejected(
+  await #expect(throws: CoreAgentError.finalAnswerRejected(
     "Final answer repeated instruction-like tool output: developer message."
   )) {
     _ = try await agent.run("Return provider event")
@@ -2344,7 +2344,7 @@ import Foundation
   ])
   let parentAgent = ToolCallingAgent(tools: [managedTool], model: parentModel, maxSteps: 1)
 
-  await #expect(throws: KarmaError.maxStepsReached(1)) {
+  await #expect(throws: CoreAgentError.maxStepsReached(1)) {
     _ = try await parentAgent.run("Delegate this")
   }
   #expect(parentAgent.memory.steps.first?.toolResults.first?.output == "child handled it")
@@ -2386,7 +2386,7 @@ import Foundation
 
 @Test func managedAgentToolUsesIsolatedMemoryByDefault() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("child-memory.json")
   let store = FileAgentMemoryStore(fileURL: fileURL)
   var retainedMemory = AgentMemory(systemPrompt: "Child system")
@@ -2422,7 +2422,7 @@ import Foundation
 
 @Test func managedAgentToolCanOptIntoAgentDefaultMemory() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("child-memory.json")
   let store = FileAgentMemoryStore(fileURL: fileURL)
   var retainedMemory = AgentMemory(systemPrompt: "Child system")
@@ -2531,7 +2531,7 @@ import Foundation
   let model = CountingModel(output: .finalAnswer("unused"))
   let agent = ToolCallingAgent(tools: [], model: model)
 
-  await #expect(throws: KarmaError.interrupted(reason: "User stopped the run.")) {
+  await #expect(throws: CoreAgentError.interrupted(reason: "User stopped the run.")) {
     _ = try await agent.run("Stop early", cancellation: cancellation)
   }
 
@@ -2552,7 +2552,7 @@ import Foundation
   ])
   let agent = ToolCallingAgent(tools: [tool], model: model)
 
-  await #expect(throws: KarmaError.interrupted(reason: "Tool requested stop.")) {
+  await #expect(throws: CoreAgentError.interrupted(reason: "Tool requested stop.")) {
     _ = try await agent.run("Call stop", cancellation: cancellation)
   }
 
@@ -2615,11 +2615,11 @@ import Foundation
     retryPolicy: RetryPolicy(maximumRetries: 1)
   )
 
-  await #expect(throws: KarmaError.retryLimitExceeded(attempts: 2, reason: "transient")) {
+  await #expect(throws: CoreAgentError.retryLimitExceeded(attempts: 2, reason: "transient")) {
     _ = try await agent.run("Recover")
   }
   #expect(agent.memory.events.last?.kind == .runFailed)
-  #expect(agent.memory.events.last?.errorType == "KarmaKit.KarmaError")
+  #expect(agent.memory.events.last?.errorType == "CoreAgent.CoreAgentError")
   #expect(agent.memory.events.last?.errorDescription == "retryLimitExceeded(attempts: 2, reason: \"transient\")")
 }
 
@@ -2635,7 +2635,7 @@ import Foundation
   do {
     _ = try await agent.run(String(repeating: "large-input ", count: 20))
     Issue.record("Expected model input limit failure")
-  } catch KarmaError.modelInputTooLarge(let characters, let maximum) {
+  } catch CoreAgentError.modelInputTooLarge(let characters, let maximum) {
     #expect(characters > maximum)
     #expect(maximum == 20)
   }
@@ -2643,7 +2643,7 @@ import Foundation
   #expect(await model.generateCallCount == 0)
   #expect(agent.memory.events.map(\.kind) == [.runStarted, .runFailed])
   #expect(agent.memory.events.last?.message?.contains("modelInputTooLarge") == true)
-  #expect(agent.memory.events.last?.errorType == "KarmaKit.KarmaError")
+  #expect(agent.memory.events.last?.errorType == "CoreAgent.CoreAgentError")
   #expect(agent.memory.events.last?.errorDescription?.contains("modelInputTooLarge") == true)
 }
 
@@ -2732,7 +2732,7 @@ import Foundation
     userPreferences: ["Prefer local models."],
     decisions: ["Use provider-backed summaries."],
     openThreads: ["Continue memory work."],
-    durableFacts: ["Project is KarmaKit."],
+    durableFacts: ["Project is CoreAgent."],
     toolResultsWorthRemembering: ["No tool results."]
   )
 
@@ -2746,7 +2746,7 @@ import Foundation
 
 @Test func memoryCompactionRunsBeforePersistedMemoryIsUsed() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("memory.json")
   let store = FileAgentMemoryStore(fileURL: fileURL)
   var memory = AgentMemory(systemPrompt: "System")
@@ -2783,7 +2783,7 @@ import Foundation
 
 @Test func agentUsesConversationCompactorForPersistedMemory() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("memory.json")
   let store = FileAgentMemoryStore(fileURL: fileURL)
   var memory = AgentMemory(systemPrompt: "System")
@@ -2829,7 +2829,7 @@ import Foundation
     "userPreferences": ["Keep work local."],
     "decisions": ["Use structured memory."],
     "openThreads": ["Finish provider-backed compaction."],
-    "durableFacts": ["Project is KarmaKit."],
+    "durableFacts": ["Project is CoreAgent."],
     "toolResultsWorthRemembering": ["Tests passed."]
   }
   """
@@ -2884,7 +2884,7 @@ import Foundation
     "summary": {
       "overview": "Wrapped summary parsed.",
       "decisions": "Use the wrapped summary object.",
-      "durableFacts": ["KarmaKit has structured memory."]
+      "durableFacts": ["CoreAgent has structured memory."]
     }
   }
   """
@@ -2898,7 +2898,7 @@ import Foundation
 
   #expect(summary.overview == "Wrapped summary parsed.")
   #expect(summary.decisions == ["Use the wrapped summary object."])
-  #expect(summary.durableFacts == ["KarmaKit has structured memory."])
+  #expect(summary.durableFacts == ["CoreAgent has structured memory."])
 }
 
 @Test func modelConversationCompactorFallsBackWhenProviderCannotSummarize() async throws {
@@ -2920,7 +2920,7 @@ import Foundation
 
 @Test func persistedMemoryCannotOverrideConfiguredSystemPrompt() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("memory.json")
   try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
   let json = """
@@ -2958,7 +2958,7 @@ import Foundation
 
 @Test func persistedMemoryDropsAdditionalSystemMessagesBeforeUse() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("memory.json")
   try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
   let json = """
@@ -2995,7 +2995,7 @@ import Foundation
 
 @Test func modelInputMergesConsecutiveSameRoleMessagesBeforeProviderCall() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("memory.json")
   let store = FileAgentMemoryStore(fileURL: fileURL)
   var memory = AgentMemory(systemPrompt: "System")
@@ -3045,7 +3045,7 @@ import Foundation
   do {
     _ = try await agent.runStreaming(String(repeating: "stream-input ", count: 20)) { _ in }
     Issue.record("Expected model input limit failure")
-  } catch KarmaError.modelInputTooLarge(let characters, let maximum) {
+  } catch CoreAgentError.modelInputTooLarge(let characters, let maximum) {
     #expect(characters > maximum)
     #expect(maximum == 20)
   }
@@ -3071,13 +3071,13 @@ import Foundation
   do {
     _ = try await agent.run("Call slow tool")
     Issue.record("Expected tool timeout")
-  } catch KarmaError.timedOut(let operation, _) {
+  } catch CoreAgentError.timedOut(let operation, _) {
     #expect(operation == "tool.slow")
   }
 
   let failedEvent = agent.memory.events.first { $0.kind == .toolCallFailed }
   #expect(failedEvent?.toolCall?.name == "slow")
-  #expect(failedEvent?.errorType == "KarmaKit.KarmaError")
+  #expect(failedEvent?.errorType == "CoreAgent.CoreAgentError")
   #expect(failedEvent?.errorDescription?.contains("timedOut") == true)
   #expect(agent.snapshotRun().metrics.toolFailureCount == 1)
 }
@@ -3093,7 +3093,7 @@ import Foundation
   do {
     _ = try await agent.run("Answer slowly")
     Issue.record("Expected model timeout")
-  } catch KarmaError.retryLimitExceeded(let attempts, let reason) {
+  } catch CoreAgentError.retryLimitExceeded(let attempts, let reason) {
     #expect(attempts == 1)
     #expect(reason.contains("timedOut"))
     #expect(reason.contains("model.generation"))
@@ -3119,7 +3119,7 @@ import Foundation
   do {
     _ = try await agent.run("Use lookup")
     Issue.record("Expected provider event failure")
-  } catch KarmaError.retryLimitExceeded(let attempts, let reason) {
+  } catch CoreAgentError.retryLimitExceeded(let attempts, let reason) {
     #expect(attempts == 1)
     #expect(reason.contains("Provider event failure"))
   }
@@ -3144,7 +3144,7 @@ import Foundation
       await recorder.record(partial)
     }
     Issue.record("Expected streaming timeout")
-  } catch KarmaError.retryLimitExceeded(let attempts, let reason) {
+  } catch CoreAgentError.retryLimitExceeded(let attempts, let reason) {
     #expect(attempts == 1)
     #expect(reason.contains("timedOut"))
     #expect(reason.contains("model.generation"))
@@ -3182,7 +3182,7 @@ import Foundation
   do {
     _ = try await agent.run("Answer within the run budget")
     Issue.record("Expected run timeout")
-  } catch KarmaError.timedOut(let operation, _) {
+  } catch CoreAgentError.timedOut(let operation, _) {
     #expect(operation == "agent.run")
   }
 
@@ -3205,7 +3205,7 @@ import Foundation
       await recorder.record(partial)
     }
     Issue.record("Expected streaming run timeout")
-  } catch KarmaError.timedOut(let operation, _) {
+  } catch CoreAgentError.timedOut(let operation, _) {
     #expect(operation == "agent.run")
   }
 
@@ -3322,7 +3322,7 @@ import Foundation
 
 @Test func fileMemoryStorePersistsAndLoadsAgentMemory() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("memory.json")
   let store = FileAgentMemoryStore(fileURL: fileURL)
 
@@ -3340,7 +3340,7 @@ import Foundation
 
 @Test func fileMemoryStoreSanitizesPersistedToolMessagesOnLoad() async throws {
   let directoryURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
   let fileURL = directoryURL.appendingPathComponent("memory.json")
   let json = """
@@ -3373,7 +3373,7 @@ import Foundation
 
 @Test func agentCanContinueFromPersistedMemory() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("memory.json")
   let store = FileAgentMemoryStore(fileURL: fileURL)
 
@@ -3399,7 +3399,7 @@ import Foundation
 
 @Test func agentTraceExporterWritesDecodableRunEnvelope() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("trace.json")
   let run = AgentRun(
     finalAnswer: "done",
@@ -3608,7 +3608,7 @@ import Foundation
 
 @Test func agentReceiptExporterWritesDecodableReceipt() async throws {
   let fileURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
     .appendingPathComponent("receipt.json")
   let run = AgentRun(
     finalAnswer: "done",
@@ -3640,7 +3640,7 @@ import Foundation
 
 @Test func agentReceiptVerifierCanMatchTraceEnvelopeRun() throws {
   let directoryURL = FileManager.default.temporaryDirectory
-    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("CoreAgentTests-\(UUID().uuidString)")
   let traceURL = directoryURL.appendingPathComponent("trace.json")
   let receiptURL = directoryURL.appendingPathComponent("receipt.json")
   let run = AgentRun(
@@ -3882,7 +3882,7 @@ private actor SerializingProbeModel: ModelProvider {
   private(set) var maximumConcurrentGenerations = 0
   private var runningGenerations = 0
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     generateCallCount += 1
     let answer = "answer-\(generateCallCount)"
     runningGenerations += 1
@@ -3996,7 +3996,7 @@ private struct ProviderEventFailure: AgentEventProvidingError, CustomStringConve
 private struct EventFailingModel: ModelProvider {
   var events: [AgentEvent]
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     throw ProviderEventFailure(agentEvents: events)
   }
 }
@@ -4010,7 +4010,7 @@ private actor FlakyModel: ModelProvider {
     self.answer = answer
   }
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     if failuresBeforeSuccess > 0 {
       failuresBeforeSuccess -= 1
       throw TestModelError.transient
@@ -4028,13 +4028,13 @@ private actor CountingModel: ModelProvider {
     self.output = output
   }
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     generateCallCount += 1
     return output
   }
 }
 
-private final class MutableTool: KarmaKit.Tool, @unchecked Sendable {
+private final class MutableTool: CoreAgent.Tool, @unchecked Sendable {
   var name: String
   var description: String
   var inputs: [String: ToolInput]
@@ -4062,7 +4062,7 @@ private actor SlowModel: ModelProvider {
     self.output = output
   }
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     generateCallCount += 1
     try await Task.sleep(for: delay)
     return output
@@ -4079,7 +4079,7 @@ private actor SlowThenSuccessfulModel: ModelProvider {
     self.answer = answer
   }
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     generateCallCount += 1
     if generateCallCount == 1 {
       try await Task.sleep(for: delay)
@@ -4098,7 +4098,7 @@ private actor CapturingModel: ModelProvider {
     self.outputs = outputs
   }
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     capturedMessages.append(messages)
     guard outputs.indices.contains(index) else {
       return .finalAnswer("done")
@@ -4137,7 +4137,7 @@ private actor SlowStreamingModel: StreamingModelProvider {
     self.output = output
   }
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     generateCallCount += 1
     try await Task.sleep(for: delay)
     return output
@@ -4145,7 +4145,7 @@ private actor SlowStreamingModel: StreamingModelProvider {
 
   func stream(
     messages: [AgentMessage],
-    tools: [any KarmaKit.Tool],
+    tools: [any CoreAgent.Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
     streamCallCount += 1
@@ -4164,14 +4164,14 @@ private actor CountingStreamingModel: StreamingModelProvider {
     self.output = output
   }
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     generateCallCount += 1
     return output
   }
 
   func stream(
     messages: [AgentMessage],
-    tools: [any KarmaKit.Tool],
+    tools: [any CoreAgent.Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
     streamCallCount += 1
@@ -4183,13 +4183,13 @@ private struct StreamingScriptedModel: StreamingModelProvider {
   var partials: [String]
   var finalAnswer: String
 
-  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+  func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
     .finalAnswer(finalAnswer)
   }
 
   func stream(
     messages: [AgentMessage],
-    tools: [any KarmaKit.Tool],
+    tools: [any CoreAgent.Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
     for partial in partials {

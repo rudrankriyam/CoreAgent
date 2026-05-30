@@ -1,7 +1,7 @@
 import Foundation
-import KarmaKit
+import CoreAgent
 
-public enum KarmaToolError: Error, CustomStringConvertible, Equatable, Sendable {
+public enum CoreAgentToolError: Error, CustomStringConvertible, Equatable, Sendable {
   case missingArgument(String)
   case invalidPath(String)
   case pathNotAllowed(String)
@@ -91,16 +91,16 @@ public struct URLFetchTool: ToolOutputDescribing {
 
   public func call(arguments: [String: String]) async throws -> String {
     guard let rawURL = arguments["url"]?.trimmingCharacters(in: .whitespacesAndNewlines), !rawURL.isEmpty else {
-      throw KarmaToolError.missingArgument("url")
+      throw CoreAgentToolError.missingArgument("url")
     }
 
     let url = try validate(rawURL)
     let response = try await client(url, timeoutSeconds)
     guard (200..<300).contains(response.statusCode) else {
-      throw KarmaToolError.invalidHTTPStatus(url: url.absoluteString, statusCode: response.statusCode)
+      throw CoreAgentToolError.invalidHTTPStatus(url: url.absoluteString, statusCode: response.statusCode)
     }
     guard response.body.count <= maximumBytes else {
-      throw KarmaToolError.responseTooLarge(url: url.absoluteString, maximumBytes: maximumBytes)
+      throw CoreAgentToolError.responseTooLarge(url: url.absoluteString, maximumBytes: maximumBytes)
     }
 
     return String(decoding: response.body, as: UTF8.self)
@@ -112,19 +112,19 @@ public struct URLFetchTool: ToolOutputDescribing {
           let host = components.host?.lowercased(),
           let url = components.url,
           !host.isEmpty else {
-      throw KarmaToolError.invalidURL(rawURL)
+      throw CoreAgentToolError.invalidURL(rawURL)
     }
 
     guard allowedSchemes.contains(scheme) else {
-      throw KarmaToolError.urlSchemeNotAllowed(scheme)
+      throw CoreAgentToolError.urlSchemeNotAllowed(scheme)
     }
 
     guard allowedHosts?.contains(host) ?? true else {
-      throw KarmaToolError.urlHostNotAllowed(host)
+      throw CoreAgentToolError.urlHostNotAllowed(host)
     }
 
     guard !isBlockedHost(host) else {
-      throw KarmaToolError.urlHostBlocked(host)
+      throw CoreAgentToolError.urlHostBlocked(host)
     }
 
     return url
@@ -211,7 +211,7 @@ public struct MathTool: ToolOutputDescribing {
 
   public func call(arguments: [String: String]) async throws -> String {
     guard let expression = arguments["expression"] else {
-      throw KarmaToolError.missingArgument("expression")
+      throw CoreAgentToolError.missingArgument("expression")
     }
 
     var parser = MathExpressionParser(expression)
@@ -241,7 +241,7 @@ public struct FileReadTool: ToolOutputDescribing {
 
   public func call(arguments: [String: String]) async throws -> String {
     guard let path = arguments["path"], !path.isEmpty else {
-      throw KarmaToolError.missingArgument("path")
+      throw CoreAgentToolError.missingArgument("path")
     }
 
     let fileURL = URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
@@ -249,16 +249,16 @@ public struct FileReadTool: ToolOutputDescribing {
       .resolvingSymlinksInPath()
 
     guard isAllowed(fileURL) else {
-      throw KarmaToolError.pathNotAllowed(fileURL.path)
+      throw CoreAgentToolError.pathNotAllowed(fileURL.path)
     }
 
     let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
     guard values.isRegularFile == true else {
-      throw KarmaToolError.invalidPath(fileURL.path)
+      throw CoreAgentToolError.invalidPath(fileURL.path)
     }
 
     if let fileSize = values.fileSize, fileSize > maximumBytes {
-      throw KarmaToolError.fileTooLarge(path: fileURL.path, maximumBytes: maximumBytes)
+      throw CoreAgentToolError.fileTooLarge(path: fileURL.path, maximumBytes: maximumBytes)
     }
 
     return try String(contentsOf: fileURL, encoding: .utf8)
@@ -299,10 +299,10 @@ public struct SearchFilesTool: ToolOutputDescribing {
 
   public func call(arguments: [String: String]) async throws -> String {
     guard let query = arguments["query"]?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty else {
-      throw KarmaToolError.missingArgument("query")
+      throw CoreAgentToolError.missingArgument("query")
     }
     guard query.count >= 2 else {
-      throw KarmaToolError.queryTooShort
+      throw CoreAgentToolError.queryTooShort
     }
 
     let maximumResults = arguments["max_results"].flatMap(Int.init) ?? defaultMaximumResults
@@ -408,7 +408,7 @@ private struct MathExpressionParser {
     let value = try parseExpression()
     skipSpaces()
     guard index == characters.count else {
-      throw KarmaToolError.unsupportedExpression(original)
+      throw CoreAgentToolError.unsupportedExpression(original)
     }
     return value
   }
@@ -436,7 +436,7 @@ private struct MathExpressionParser {
       } else if consume("/") {
         let divisor = try parseFactor()
         guard divisor != 0 else {
-          throw KarmaToolError.divisionByZero
+          throw CoreAgentToolError.divisionByZero
         }
         value /= divisor
       } else {
@@ -453,7 +453,7 @@ private struct MathExpressionParser {
     if consume("(") {
       let value = try parseExpression()
       guard consume(")") else {
-        throw KarmaToolError.unsupportedExpression(original)
+        throw CoreAgentToolError.unsupportedExpression(original)
       }
       return value
     }
@@ -467,7 +467,7 @@ private struct MathExpressionParser {
       index += 1
     }
     guard start != index, let value = Double(String(characters[start..<index])) else {
-      throw KarmaToolError.unsupportedExpression(original)
+      throw CoreAgentToolError.unsupportedExpression(original)
     }
     return value
   }
