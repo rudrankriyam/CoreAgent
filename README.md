@@ -40,6 +40,7 @@ swift run karma --demo-tools "Use the multiply tool to multiply 12 by 13. Return
 swift run karma --verbose --demo-tools "What time is it? Use the available action."
 swift run karma --stream "Write one sentence about local agents."
 swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
+swift run karma --receipt /tmp/karma-receipt.json "Explain tool calling in one sentence."
 swift run karma --structured-demo "Summarize Foundation Models agents."
 swift run karma --demo-tools "Use calculate to evaluate 2 + 3 * 5. Return only the result."
 swift run karma --demo-tools --allow-file-dir /tmp "Read /tmp/example.txt and summarize it."
@@ -65,6 +66,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `StreamingModelProvider`: streams partial responses when a provider supports it.
 - `FileAgentMemoryStore`: saves and reloads agent memory as JSON.
 - `AgentTraceExporter`: writes run traces for debugging and audits.
+- `AgentReceiptExporter`: writes and verifies tamper-evident run receipts.
 - `FoundationModelSchemaAdapter`: builds nested Foundation Models schemas from KarmaKit tool inputs.
 - `KarmaKitTools`: reusable tools for current time, arithmetic, whitelisted file reads, and local text search.
 
