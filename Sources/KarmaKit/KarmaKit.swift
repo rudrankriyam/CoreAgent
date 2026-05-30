@@ -14,6 +14,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case maxStepsReached(Int)
   case untrustedTool(name: String, digest: String)
   case untrustedToolIdentity(name: String, serverID: String)
+  case toolDenied(name: String, reason: String)
   case modelInputTooLarge(characters: Int, maximum: Int)
   case interrupted(reason: String)
   case configurationMismatch(String)
@@ -536,6 +537,34 @@ public struct AllowAllToolExecutionPolicy: ToolExecutionPolicy {
   public init() {}
 
   public func authorize(_ context: ToolExecutionContext) async throws {}
+}
+
+public struct CompositeToolExecutionPolicy: ToolExecutionPolicy {
+  public var policies: [any ToolExecutionPolicy]
+
+  public init(_ policies: [any ToolExecutionPolicy]) {
+    self.policies = policies
+  }
+
+  public func authorize(_ context: ToolExecutionContext) async throws {
+    for policy in policies {
+      try await policy.authorize(context)
+    }
+  }
+}
+
+public struct ToolNameAllowlistExecutionPolicy: ToolExecutionPolicy {
+  public var allowedToolNames: Set<String>
+
+  public init(_ allowedToolNames: Set<String>) {
+    self.allowedToolNames = allowedToolNames
+  }
+
+  public func authorize(_ context: ToolExecutionContext) async throws {
+    guard allowedToolNames.contains(context.call.name) else {
+      throw KarmaError.toolDenied(name: context.call.name, reason: "Tool name is not allowed.")
+    }
+  }
 }
 
 public struct TrustedToolExecutionPolicy: ToolExecutionPolicy {

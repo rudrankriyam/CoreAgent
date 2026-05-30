@@ -999,6 +999,56 @@ import Foundation
   }
 }
 
+@Test func compositeToolExecutionPolicyRunsAllPoliciesBeforeToolCall() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
+    await counter.increment()
+    return "approved"
+  }
+  let manifest = try ToolManifest(tool: tool)
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "lookup")]),
+    .finalAnswer("approved")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    toolExecutionPolicy: CompositeToolExecutionPolicy([
+      ToolNameAllowlistExecutionPolicy(["lookup"]),
+      TrustedToolExecutionPolicy(approvedManifests: [manifest])
+    ])
+  )
+
+  let run = try await agent.run("Use lookup")
+
+  #expect(run.finalAnswer == "approved")
+  #expect(await counter.value == 1)
+  #expect(run.metrics.toolAuthorizationCount == 1)
+}
+
+@Test func toolNameAllowlistExecutionPolicyDeniesUnexpectedToolBeforeExecution() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(name: "delete_file", description: "Deletes a file.", inputs: [:]) { _ in
+    await counter.increment()
+    return "deleted"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "delete_file")])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    toolExecutionPolicy: ToolNameAllowlistExecutionPolicy(["lookup"])
+  )
+
+  await #expect(throws: KarmaError.toolDenied(name: "delete_file", reason: "Tool name is not allowed.")) {
+    _ = try await agent.run("Use delete_file")
+  }
+
+  #expect(await counter.value == 0)
+  #expect(agent.memory.events.contains { $0.kind == .toolCallDenied && $0.toolCall?.name == "delete_file" })
+}
+
 @Test func agentConfigurationRoundTripsAndRebuildsAgent() async throws {
   let tool = ClosureTool(
     name: "lookup",
