@@ -695,6 +695,37 @@ import Foundation
   #expect(event.errorDescription == nil)
 }
 
+@Test func agentRunSnapshotCapturesFailedMemory() async throws {
+  let model = CountingModel(output: .finalAnswer("unused"))
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    limits: AgentLimits(maximumModelInputCharacters: 20)
+  )
+  let startedAt = Date(timeIntervalSince1970: 10)
+  let endedAt = Date(timeIntervalSince1970: 12)
+
+  do {
+    _ = try await agent.run(String(repeating: "large-input ", count: 20))
+    Issue.record("Expected model input limit failure")
+  } catch KarmaError.modelInputTooLarge(let characters, let maximum) {
+    #expect(characters > maximum)
+    #expect(maximum == 20)
+  } catch {
+    Issue.record("Unexpected error: \(error)")
+  }
+
+  let snapshot = agent.snapshotRun(startedAt: startedAt, endedAt: endedAt)
+
+  #expect(snapshot.finalAnswer == "")
+  #expect(snapshot.messages.count == agent.memory.messages.count)
+  #expect(snapshot.events.last?.kind == .runFailed)
+  #expect(snapshot.events.last?.errorType == "KarmaKit.KarmaError")
+  #expect(snapshot.startedAt == startedAt)
+  #expect(snapshot.endedAt == endedAt)
+  #expect(snapshot.metrics.isFailed)
+}
+
 @Test func finalAnswerValidatorsCanRejectAnswers() async throws {
   let model = ScriptedModel(outputs: [
     .finalAnswer("   ")

@@ -927,6 +927,22 @@ public struct AgentRun: Codable, Equatable, Sendable {
       endedAt: endedAt
     )
   }
+
+  public static func snapshot(
+    memory: AgentMemory,
+    finalAnswer: String = "",
+    startedAt: Date? = nil,
+    endedAt: Date? = Date()
+  ) -> AgentRun {
+    AgentRun(
+      finalAnswer: finalAnswer,
+      steps: memory.steps,
+      messages: memory.messages,
+      events: memory.events,
+      startedAt: startedAt,
+      endedAt: endedAt
+    )
+  }
 }
 
 public struct AgentRunMetrics: Codable, Equatable, Sendable {
@@ -1439,6 +1455,10 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolCallExecutionMode: toolCallExecutionMode,
       toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
+  }
+
+  public func snapshotRun(finalAnswer: String = "", startedAt: Date? = nil, endedAt: Date? = Date()) -> AgentRun {
+    AgentRun.snapshot(memory: memory, finalAnswer: finalAnswer, startedAt: startedAt, endedAt: endedAt)
   }
 
   public func run(_ task: String, cancellation: AgentCancellation? = nil) async throws -> AgentRun {

@@ -82,29 +82,42 @@ struct KarmaCLI {
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           validatesToolNames: true
         )
+        let startedAt = Date()
         let run: AgentRun
-        if enablesStreaming {
-          run = try await agent.runStreaming(prompt) { partial in
-            print("\r\(partial)", terminator: "")
-            fflush(stdout)
+        do {
+          if enablesStreaming {
+            run = try await agent.runStreaming(prompt) { partial in
+              print("\r\(partial)", terminator: "")
+              fflush(stdout)
+            }
+            print("")
+          } else {
+            run = try await agent.run(prompt)
+            print(run.finalAnswer)
           }
-          print("")
-        } else {
-          run = try await agent.run(prompt)
-          print(run.finalAnswer)
+        } catch {
+          let failedRun = agent.snapshotRun(startedAt: startedAt)
+          try writeArtifacts(
+            run: failedRun,
+            tracePath: tracePath,
+            receiptPath: receiptPath,
+            redactionPolicy: redactionPolicy
+          )
+          if enablesVerboseOutput {
+            fputs("\n\(failedRun.events.karmaDebugDescription)\n", stderr)
+          }
+          throw error
         }
 
         if enablesVerboseOutput {
           fputs("\n\(run.events.karmaDebugDescription)\n", stderr)
         }
-        if let tracePath {
-          try AgentTraceExporter(redactionPolicy: redactionPolicy).write(run, to: URL(fileURLWithPath: tracePath))
-          fputs("Trace written to \(tracePath)\n", stderr)
-        }
-        if let receiptPath {
-          try AgentReceiptExporter(redactionPolicy: redactionPolicy).write(run, to: URL(fileURLWithPath: receiptPath))
-          fputs("Receipt written to \(receiptPath)\n", stderr)
-        }
+        try writeArtifacts(
+          run: run,
+          tracePath: tracePath,
+          receiptPath: receiptPath,
+          redactionPolicy: redactionPolicy
+        )
       } else {
         fputs("Karma requires macOS 26 or newer for Foundation Models.\n", stderr)
         Foundation.exit(1)
@@ -140,6 +153,22 @@ struct KarmaCLI {
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(manifests)
     print(String(decoding: data, as: UTF8.self))
+  }
+
+  private static func writeArtifacts(
+    run: AgentRun,
+    tracePath: String?,
+    receiptPath: String?,
+    redactionPolicy: AgentRedactionPolicy
+  ) throws {
+    if let tracePath {
+      try AgentTraceExporter(redactionPolicy: redactionPolicy).write(run, to: URL(fileURLWithPath: tracePath))
+      fputs("Trace written to \(tracePath)\n", stderr)
+    }
+    if let receiptPath {
+      try AgentReceiptExporter(redactionPolicy: redactionPolicy).write(run, to: URL(fileURLWithPath: receiptPath))
+      fputs("Receipt written to \(receiptPath)\n", stderr)
+    }
   }
 
   private static func printAgentConfiguration(
