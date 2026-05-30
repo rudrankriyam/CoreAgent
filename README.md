@@ -21,7 +21,7 @@ The name "Karma" comes from the Sanskrit word कर्म (karma), which means 
 import KarmaKit
 import KarmaKitFoundationModels
 
-if #available(iOS 26.0, *) {
+if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
   let provider = FoundationModelProvider()
   let agent = ToolCallingAgent(tools: [], model: provider)
   let run = try await agent.run("Explain tool calling in one sentence.")

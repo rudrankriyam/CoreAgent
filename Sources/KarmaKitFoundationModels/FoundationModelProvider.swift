@@ -2,7 +2,7 @@ import Foundation
 import FoundationModels
 import KarmaKit
 
-@available(iOS 26.0, macOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 public enum FoundationModelProviderError: Error, CustomStringConvertible, Equatable, Sendable {
@@ -39,7 +39,7 @@ public struct FoundationModelToolExecutionError: AgentEventProvidingError, Custo
   }
 }
 
-@available(iOS 26.0, macOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 public struct FoundationModelProvider: StreamingModelProvider {
@@ -222,7 +222,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
   }
 }
 
-@available(iOS 26.0, macOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 extension FoundationModelProvider: ToolExecutionPolicyConfigurableModelProvider {
@@ -250,7 +250,7 @@ public actor FoundationModelToolAudit {
   }
 }
 
-@available(iOS 26.0, macOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 enum FoundationModelTranscriptEvents {
@@ -293,7 +293,7 @@ enum FoundationModelTranscriptEvents {
   }
 }
 
-@available(iOS 26.0, macOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 private extension [Transcript.Segment] {
@@ -324,7 +324,7 @@ enum FoundationModelPrompt {
   }
 }
 
-@available(iOS 26.0, macOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 public struct FoundationModelToolAdapter: FoundationModels.Tool {
@@ -437,7 +437,7 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
   }
 }
 
-@available(iOS 26.0, macOS 26.0, *)
+@available(iOS 26.0, macOS 26.0, visionOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 public enum FoundationModelSchemaAdapter {
