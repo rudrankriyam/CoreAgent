@@ -180,6 +180,90 @@ import Foundation
   }
 }
 
+@Test func agentConfigurationRoundTripsAndRebuildsAgent() async throws {
+  let tool = ClosureTool(
+    name: "lookup",
+    description: "Looks up public data.",
+    inputs: ["query": ToolInput(type: .string, description: "Search query.")]
+  ) { arguments in
+    "found \(arguments["query", default: ""])"
+  }
+  let sourceAgent = ToolCallingAgent(
+    tools: [tool],
+    model: ScriptedModel(outputs: []),
+    systemPrompt: "System",
+    maxSteps: 3,
+    resetsMemoryBeforeRun: false,
+    retryPolicy: RetryPolicy(maximumRetries: 2, delay: .milliseconds(5)),
+    timeouts: AgentTimeouts(toolCall: .seconds(2)),
+    limits: AgentLimits(maximumModelInputCharacters: 1000, maximumToolOutputCharacters: 100)
+  )
+  let configuration = try sourceAgent.configuration()
+  let data = try JSONEncoder().encode(configuration)
+  let decoded = try JSONDecoder().decode(AgentConfiguration.self, from: data)
+  let rebuiltAgent = try ToolCallingAgent(
+    configuration: decoded,
+    tools: [tool],
+    model: ScriptedModel(outputs: [
+      .toolCalls([ToolCall(id: "call_1", name: "lookup", arguments: ["query": "karma"])]),
+      .finalAnswer("found karma")
+    ])
+  )
+
+  let run = try await rebuiltAgent.run("Lookup karma")
+
+  #expect(decoded == configuration)
+  #expect(run.finalAnswer == "found karma")
+  #expect(rebuiltAgent.maxSteps == 3)
+  #expect(rebuiltAgent.resetsMemoryBeforeRun == false)
+  #expect(rebuiltAgent.limits.maximumToolOutputCharacters == 100)
+}
+
+@Test func agentConfigurationRejectsRuntimeToolDrift() throws {
+  let approvedTool = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
+    "approved"
+  }
+  let changedTool = ClosureTool(name: "lookup", description: "Looks up private data.", inputs: [:]) { _ in
+    "changed"
+  }
+  let configuration = AgentConfiguration(
+    systemPrompt: "System",
+    maxSteps: 3,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: .none,
+    toolManifests: [try ToolManifest(tool: approvedTool)]
+  )
+
+  #expect(throws: KarmaError.configurationMismatch(
+    "Configured tools [lookup] do not match runtime tools [lookup]."
+  )) {
+    try configuration.verifyTools([changedTool])
+  }
+}
+
+@Test func agentConfigurationRejectsMissingRuntimeTool() throws {
+  let approvedTool = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
+    "approved"
+  }
+  let configuration = AgentConfiguration(
+    systemPrompt: "System",
+    maxSteps: 3,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: .none,
+    toolManifests: [try ToolManifest(tool: approvedTool)]
+  )
+
+  #expect(throws: KarmaError.configurationMismatch(
+    "Configured tools [lookup] do not match runtime tools []."
+  )) {
+    try configuration.verifyTools([])
+  }
+}
+
 @Test func toolOutputWithInstructionLikeTextIsMarkedAsUntrustedData() async throws {
   let result = ToolResult(
     callID: "call_1",

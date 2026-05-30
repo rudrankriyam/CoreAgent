@@ -15,6 +15,7 @@ struct KarmaCLI {
       }
 
       let listsTools = arguments.removeAll("--list-tools")
+      let printsConfiguration = arguments.removeAll("--print-config")
       let enablesDemoTools = arguments.removeAll("--demo-tools")
       let enablesVerboseOutput = arguments.removeAll("--verbose")
       let enablesStreaming = arguments.removeAll("--stream")
@@ -31,6 +32,15 @@ struct KarmaCLI {
 
       if listsTools {
         try printToolManifests(for: tools)
+        return
+      }
+
+      if printsConfiguration {
+        try printAgentConfiguration(
+          tools: tools,
+          maximumModelInputCharacters: maximumModelInputCharacters,
+          maximumToolOutputCharacters: maximumToolOutputCharacters
+        )
         return
       }
 
@@ -103,6 +113,7 @@ struct KarmaCLI {
     print("Usage: karma <prompt>")
     print("       karma --demo-tools <prompt>")
     print("       karma --demo-tools --list-tools")
+    print("       karma --demo-tools --print-config")
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
@@ -120,6 +131,29 @@ struct KarmaCLI {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(manifests)
+    print(String(decoding: data, as: UTF8.self))
+  }
+
+  private static func printAgentConfiguration(
+    tools: [any Tool],
+    maximumModelInputCharacters: Int?,
+    maximumToolOutputCharacters: Int?
+  ) throws {
+    let configuration = AgentConfiguration(
+      systemPrompt: "You are a helpful Swift agent. Use tools when useful, then return a final answer.",
+      maxSteps: 8,
+      resetsMemoryBeforeRun: true,
+      retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
+      timeouts: .none,
+      limits: AgentLimits(
+        maximumModelInputCharacters: maximumModelInputCharacters,
+        maximumToolOutputCharacters: maximumToolOutputCharacters
+      ),
+      toolManifests: try tools.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(configuration)
     print(String(decoding: data, as: UTF8.self))
   }
 }

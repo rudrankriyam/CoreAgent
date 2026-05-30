@@ -13,6 +13,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case untrustedTool(name: String, digest: String)
   case modelInputTooLarge(characters: Int, maximum: Int)
   case interrupted(reason: String)
+  case configurationMismatch(String)
 }
 
 public enum MessageRole: String, Codable, Equatable, Sendable {
@@ -462,6 +463,26 @@ public struct RetryPolicy: Equatable, Sendable {
   public static let none = RetryPolicy()
 }
 
+extension RetryPolicy: Codable {
+  private enum CodingKeys: String, CodingKey {
+    case maximumRetries
+    case delaySeconds
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    maximumRetries = try container.decode(Int.self, forKey: .maximumRetries)
+    let delaySeconds = try container.decode(Double.self, forKey: .delaySeconds)
+    delay = .seconds(delaySeconds)
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(maximumRetries, forKey: .maximumRetries)
+    try container.encode(delay.secondsValue, forKey: .delaySeconds)
+  }
+}
+
 public struct AgentTimeouts: Equatable, Sendable {
   public var toolCall: Duration?
 
@@ -472,7 +493,23 @@ public struct AgentTimeouts: Equatable, Sendable {
   public static let none = AgentTimeouts()
 }
 
-public struct AgentLimits: Equatable, Sendable {
+extension AgentTimeouts: Codable {
+  private enum CodingKeys: String, CodingKey {
+    case toolCallSeconds
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    toolCall = try container.decodeIfPresent(Double.self, forKey: .toolCallSeconds).map(Duration.seconds)
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encodeIfPresent(toolCall?.secondsValue, forKey: .toolCallSeconds)
+  }
+}
+
+public struct AgentLimits: Codable, Equatable, Sendable {
   public var maximumModelInputCharacters: Int?
   public var maximumToolOutputCharacters: Int?
 
@@ -482,6 +519,58 @@ public struct AgentLimits: Equatable, Sendable {
   }
 
   public static let none = AgentLimits()
+}
+
+private extension Duration {
+  var secondsValue: Double {
+    let components = components
+    return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
+  }
+}
+
+public struct AgentConfiguration: Codable, Equatable, Sendable {
+  public var version: Int
+  public var systemPrompt: String
+  public var maxSteps: Int
+  public var resetsMemoryBeforeRun: Bool
+  public var retryPolicy: RetryPolicy
+  public var timeouts: AgentTimeouts
+  public var limits: AgentLimits
+  public var toolManifests: [ToolManifest]
+
+  public init(
+    version: Int = 1,
+    systemPrompt: String,
+    maxSteps: Int,
+    resetsMemoryBeforeRun: Bool,
+    retryPolicy: RetryPolicy,
+    timeouts: AgentTimeouts,
+    limits: AgentLimits,
+    toolManifests: [ToolManifest]
+  ) {
+    self.version = version
+    self.systemPrompt = systemPrompt
+    self.maxSteps = maxSteps
+    self.resetsMemoryBeforeRun = resetsMemoryBeforeRun
+    self.retryPolicy = retryPolicy
+    self.timeouts = timeouts
+    self.limits = limits
+    self.toolManifests = toolManifests
+  }
+
+  public func verifyTools(_ tools: [any Tool]) throws {
+    let runtimeManifests = try tools.map(ToolManifest.init(tool:))
+    let configuredDigests = Set(toolManifests.map(\.digest))
+    let runtimeDigests = Set(runtimeManifests.map(\.digest))
+
+    guard configuredDigests == runtimeDigests else {
+      let configuredNames = toolManifests.map(\.name).sorted().joined(separator: ",")
+      let runtimeNames = runtimeManifests.map(\.name).sorted().joined(separator: ",")
+      throw KarmaError.configurationMismatch(
+        "Configured tools [\(configuredNames)] do not match runtime tools [\(runtimeNames)]."
+      )
+    }
+  }
 }
 
 public struct ActionStep: Codable, Equatable, Sendable {
@@ -928,6 +1017,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let limits: AgentLimits
   public let memoryStore: (any AgentMemoryStore)?
   public private(set) var memory: AgentMemory
+  private let systemPrompt: String
 
   public init(
     tools: [any Tool],
@@ -944,6 +1034,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     memoryStore: (any AgentMemoryStore)? = nil
   ) {
     self.model = model
+    self.systemPrompt = systemPrompt
     self.tools = tools.reduce(into: [String: any Tool]()) { partialResult, tool in
       partialResult[tool.name] = tool
     }
@@ -957,6 +1048,32 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.limits = limits
     self.memoryStore = memoryStore
     self.memory = AgentMemory(systemPrompt: systemPrompt)
+  }
+
+  public convenience init(
+    configuration: AgentConfiguration,
+    tools: [any Tool],
+    model: any ModelProvider,
+    toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy(),
+    finalAnswerValidators: [any FinalAnswerValidator] = [NonEmptyFinalAnswerValidator()],
+    observers: [any AgentObserver] = [],
+    memoryStore: (any AgentMemoryStore)? = nil
+  ) throws {
+    try configuration.verifyTools(tools)
+    self.init(
+      tools: tools,
+      model: model,
+      systemPrompt: configuration.systemPrompt,
+      maxSteps: configuration.maxSteps,
+      toolExecutionPolicy: toolExecutionPolicy,
+      finalAnswerValidators: finalAnswerValidators,
+      observers: observers,
+      resetsMemoryBeforeRun: configuration.resetsMemoryBeforeRun,
+      retryPolicy: configuration.retryPolicy,
+      timeouts: configuration.timeouts,
+      limits: configuration.limits,
+      memoryStore: memoryStore
+    )
   }
 
   public convenience init(
@@ -996,6 +1113,18 @@ public final class ToolCallingAgent: @unchecked Sendable {
       timeouts: timeouts,
       limits: limits,
       memoryStore: memoryStore
+    )
+  }
+
+  public func configuration() throws -> AgentConfiguration {
+    try AgentConfiguration(
+      systemPrompt: systemPrompt,
+      maxSteps: maxSteps,
+      resetsMemoryBeforeRun: resetsMemoryBeforeRun,
+      retryPolicy: retryPolicy,
+      timeouts: timeouts,
+      limits: limits,
+      toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
   }
 
