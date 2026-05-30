@@ -41,6 +41,8 @@ swift run karma --verbose --demo-tools "What time is it? Use the available actio
 swift run karma --stream "Write one sentence about local agents."
 swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
 swift run karma --structured-demo "Summarize Foundation Models agents."
+swift run karma --demo-tools "Use calculate to evaluate 2 + 3 * 5. Return only the result."
+swift run karma --demo-tools --allow-file-dir /tmp "Read /tmp/example.txt and summarize it."
 ```
 
 ## Current Foundation
@@ -63,6 +65,7 @@ swift run karma --structured-demo "Summarize Foundation Models agents."
 - `FileAgentMemoryStore`: saves and reloads agent memory as JSON.
 - `AgentTraceExporter`: writes run traces for debugging and audits.
 - `FoundationModelSchemaAdapter`: builds nested Foundation Models schemas from KarmaKit tool inputs.
+- `KarmaKitTools`: reusable tools for current time, arithmetic, and whitelisted file reads.
 
 ## Roadmap
 

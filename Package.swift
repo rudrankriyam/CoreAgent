@@ -20,6 +20,10 @@ let package = Package(
       name: "KarmaKitFoundationModels",
       targets: ["KarmaKitFoundationModels"]
     ),
+    .library(
+      name: "KarmaKitTools",
+      targets: ["KarmaKitTools"]
+    ),
     .executable(
       name: "karma",
       targets: ["KarmaCLI"]
@@ -31,18 +35,31 @@ let package = Package(
       name: "KarmaKitFoundationModels",
       dependencies: ["KarmaKit"]
     ),
+    .target(
+      name: "KarmaKitTools",
+      dependencies: ["KarmaKit"]
+    ),
     .executableTarget(
       name: "KarmaCLI",
       dependencies: [
         "KarmaKit",
-        "KarmaKitFoundationModels"
+        "KarmaKitFoundationModels",
+        "KarmaKitTools"
       ]
     ),
     .testTarget(
       name: "KarmaKitTests",
       dependencies: [
         "KarmaKit",
-        "KarmaKitFoundationModels"
+        "KarmaKitFoundationModels",
+        "KarmaKitTools"
+      ]
+    ),
+    .testTarget(
+      name: "KarmaKitToolsTests",
+      dependencies: [
+        "KarmaKit",
+        "KarmaKitTools"
       ]
     )
   ]

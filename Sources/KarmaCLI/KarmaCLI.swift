@@ -1,6 +1,7 @@
 import Foundation
 import KarmaKit
 import KarmaKitFoundationModels
+import KarmaKitTools
 
 @main
 struct KarmaCLI {
@@ -18,6 +19,7 @@ struct KarmaCLI {
       let enablesStreaming = arguments.removeAll("--stream")
       let enablesStructuredDemo = arguments.removeAll("--structured-demo")
       let tracePath = arguments.removeOptionValue("--trace")
+      let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
       let prompt = arguments.joined(separator: " ")
 
       if #available(macOS 26.0, *) {
@@ -43,7 +45,7 @@ struct KarmaCLI {
         }
 
         let agent = try ToolCallingAgent(
-          tools: enablesDemoTools ? DemoTools.all : [],
+          tools: enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : [],
           model: provider,
           validatesToolNames: true
         )
@@ -83,33 +85,29 @@ struct KarmaCLI {
     print("       karma --stream <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
     print("       karma --structured-demo <prompt>")
+    print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
   }
 }
 
 private enum DemoTools {
-  static var all: [any Tool] {
-    [
-      ClosureTool(
-        name: "current_time",
-        description: "Returns the current date and time in ISO 8601 format.",
-        inputs: [:]
-      ) { _ in
-        ISO8601DateFormatter().string(from: Date())
-      },
-      ClosureTool(
-        name: "multiply",
-        description: "Multiplies two numbers and returns the result.",
-        inputs: [
-          "left": ToolInput(type: .number, description: "The first number."),
-          "right": ToolInput(type: .number, description: "The second number.")
-        ]
-      ) { arguments in
-        let left = Double(arguments["left", default: "0"]) ?? 0
-        let right = Double(arguments["right", default: "0"]) ?? 0
-        return String(left * right)
-      }
+  static func makeTools(allowedFileDirectories: [String]) -> [any Tool] {
+    var tools: [any Tool] = [
+      CurrentTimeTool(),
+      MathTool()
     ]
+
+    if !allowedFileDirectories.isEmpty {
+      tools.append(
+        FileReadTool(
+          allowedDirectories: allowedFileDirectories.map {
+            URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath)
+          }
+        )
+      )
+    }
+
+    return tools
   }
 }
 
@@ -131,6 +129,14 @@ private extension Array where Element == String {
     }
 
     return remove(at: index)
+  }
+
+  mutating func removeOptionValues(_ name: String) -> [String] {
+    var values: [String] = []
+    while let value = removeOptionValue(name) {
+      values.append(value)
+    }
+    return values
   }
 }
 
