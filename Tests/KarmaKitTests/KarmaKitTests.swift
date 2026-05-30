@@ -617,6 +617,7 @@ import Foundation
   #expect(metrics.modelOutputCount == 2)
   #expect(metrics.toolCallCount == 1)
   #expect(metrics.toolResultCount == 1)
+  #expect(metrics.toolFailureCount == 0)
   #expect(metrics.limitedToolOutputCount == 1)
   #expect(metrics.modelInputWindowedCount == 0)
   #expect(metrics.modelRetryCount == 0)
@@ -676,6 +677,7 @@ import Foundation
 
   #expect(metrics.stepCount == 1)
   #expect(metrics.modelInputWindowedCount == 0)
+  #expect(metrics.toolFailureCount == 0)
   #expect(metrics.usage.totalTokens == nil)
 }
 
@@ -1081,6 +1083,33 @@ import Foundation
   } catch KarmaError.timedOut(let operation, _) {
     #expect(operation == "tool.slow")
   }
+
+  let failedEvent = agent.memory.events.first { $0.kind == .toolCallFailed }
+  #expect(failedEvent?.toolCall?.name == "slow")
+  #expect(failedEvent?.errorType == "KarmaKit.KarmaError")
+  #expect(failedEvent?.errorDescription?.contains("timedOut") == true)
+  #expect(agent.snapshotRun().metrics.toolFailureCount == 1)
+}
+
+@Test func throwingToolRecordsToolFailureEvent() async throws {
+  let tool = ClosureTool(name: "unstable", description: "Fails.", inputs: [:]) { _ in
+    throw ToolFailureError.offline
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "unstable")])
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  await #expect(throws: ToolFailureError.offline) {
+    _ = try await agent.run("Call unstable")
+  }
+
+  let failedEvent = agent.memory.events.first { $0.kind == .toolCallFailed }
+  #expect(failedEvent?.toolCall?.id == "call_1")
+  #expect(failedEvent?.toolManifest?.name == "unstable")
+  #expect(failedEvent?.errorType?.contains("ToolFailureError") == true)
+  #expect(failedEvent?.errorDescription == "offline")
+  #expect(agent.memory.events.last?.kind == .runFailed)
 }
 
 @Test func oversizedToolOutputIsShortenedBeforeEnteringMemory() async throws {
@@ -1553,6 +1582,17 @@ private enum TestModelError: Error, CustomStringConvertible {
     switch self {
     case .transient:
       "transient"
+    }
+  }
+}
+
+private enum ToolFailureError: Error, CustomStringConvertible {
+  case offline
+
+  var description: String {
+    switch self {
+    case .offline:
+      "offline"
     }
   }
 }

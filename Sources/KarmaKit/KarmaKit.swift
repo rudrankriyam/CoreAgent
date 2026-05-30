@@ -226,6 +226,7 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case modelRetry
   case toolCallStarted
   case toolCallFinished
+  case toolCallFailed
   case toolOutputLimited
   case modelInputWindowed
   case partialResponse
@@ -953,6 +954,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
   public var modelRetryCount: Int
   public var toolCallCount: Int
   public var toolResultCount: Int
+  public var toolFailureCount: Int
   public var limitedToolOutputCount: Int
   public var modelInputWindowedCount: Int
   public var partialResponseCount: Int
@@ -968,6 +970,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     case modelOutputCount
     case toolCallCount
     case toolResultCount
+    case toolFailureCount
     case limitedToolOutputCount
     case modelInputWindowedCount
     case modelRetryCount
@@ -986,6 +989,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     modelRetryCount: Int,
     toolCallCount: Int,
     toolResultCount: Int,
+    toolFailureCount: Int = 0,
     limitedToolOutputCount: Int,
     modelInputWindowedCount: Int = 0,
     partialResponseCount: Int,
@@ -1001,6 +1005,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     self.modelRetryCount = modelRetryCount
     self.toolCallCount = toolCallCount
     self.toolResultCount = toolResultCount
+    self.toolFailureCount = toolFailureCount
     self.limitedToolOutputCount = limitedToolOutputCount
     self.modelInputWindowedCount = modelInputWindowedCount
     self.partialResponseCount = partialResponseCount
@@ -1019,6 +1024,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       modelRetryCount: run.events.filter { $0.kind == .modelRetry }.count,
       toolCallCount: run.events.filter { $0.kind == .toolCallStarted }.count,
       toolResultCount: run.events.filter { $0.kind == .toolCallFinished }.count,
+      toolFailureCount: run.events.filter { $0.kind == .toolCallFailed }.count,
       limitedToolOutputCount: run.events.filter { $0.kind == .toolOutputLimited }.count,
       modelInputWindowedCount: run.events.filter { $0.kind == .modelInputWindowed }.count,
       partialResponseCount: run.events.filter { $0.kind == .partialResponse }.count,
@@ -1039,6 +1045,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       modelRetryCount: try container.decode(Int.self, forKey: .modelRetryCount),
       toolCallCount: try container.decode(Int.self, forKey: .toolCallCount),
       toolResultCount: try container.decode(Int.self, forKey: .toolResultCount),
+      toolFailureCount: try container.decodeIfPresent(Int.self, forKey: .toolFailureCount) ?? 0,
       limitedToolOutputCount: try container.decode(Int.self, forKey: .limitedToolOutputCount),
       modelInputWindowedCount: try container.decodeIfPresent(Int.self, forKey: .modelInputWindowedCount) ?? 0,
       partialResponseCount: try container.decode(Int.self, forKey: .partialResponseCount),
@@ -1086,8 +1093,15 @@ private struct PreparedToolCall: Sendable {
 
 private struct ToolExecutionOutput: Sendable {
   var index: Int
-  var result: ToolResult
+  var result: ToolResult?
   var events: [AgentEvent]
+  var failure: (any Error)?
+}
+
+private struct ToolExecutionFailure: Error, Sendable {
+  var index: Int
+  var underlyingError: any Error
+  var event: AgentEvent
 }
 
 private actor AgentRunGate {
@@ -1627,11 +1641,19 @@ public final class ToolCallingAgent: @unchecked Sendable {
         cancellation: cancellation,
         emitsStartEvent: true
       )
-      let output = try await executePreparedToolCall(prepared, cancellation: cancellation, emitsInterruption: true)
+      let output: ToolExecutionOutput
+      do {
+        output = try await executePreparedToolCall(prepared, cancellation: cancellation, emitsInterruption: true)
+      } catch let failure as ToolExecutionFailure {
+        await emit(failure.event)
+        throw failure.underlyingError
+      }
       for event in output.events {
         await emit(event)
       }
-      results.append(output.result)
+      if let result = output.result {
+        results.append(result)
+      }
     }
     return results
   }
@@ -1672,8 +1694,14 @@ public final class ToolCallingAgent: @unchecked Sendable {
       }
 
       var outputs: [ToolExecutionOutput] = []
-      for try await output in group {
-        outputs.append(output)
+      do {
+        for try await output in group {
+          outputs.append(output)
+        }
+      } catch let failure as ToolExecutionFailure {
+        return outputs + [
+          ToolExecutionOutput(index: failure.index, result: nil, events: [failure.event], failure: failure.underlyingError)
+        ]
       }
       return outputs.sorted { $0.index < $1.index }
     }
@@ -1682,8 +1710,11 @@ public final class ToolCallingAgent: @unchecked Sendable {
       for event in output.events {
         await emit(event)
       }
+      if let failure = output.failure {
+        throw failure
+      }
     }
-    return outputs.map(\.result)
+    return outputs.compactMap(\.result)
   }
 
   private func prepareToolCall(
@@ -1715,34 +1746,52 @@ public final class ToolCallingAgent: @unchecked Sendable {
     cancellation: AgentCancellation?,
     emitsInterruption: Bool
   ) async throws -> ToolExecutionOutput {
-    try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
-    let rawOutput = try await callTool(prepared.tool, arguments: prepared.call.arguments)
-    try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
-    let limitedOutput = limitToolOutput(rawOutput)
-    let result = ToolResult(callID: prepared.call.id, output: limitedOutput.output)
-    var events: [AgentEvent] = []
-    if let message = limitedOutput.message {
+    do {
+      try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
+      let rawOutput = try await callTool(prepared.tool, arguments: prepared.call.arguments)
+      try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
+      let limitedOutput = limitToolOutput(rawOutput)
+      let result = ToolResult(callID: prepared.call.id, output: limitedOutput.output)
+      var events: [AgentEvent] = []
+      if let message = limitedOutput.message {
+        events.append(
+          .init(
+            kind: .toolOutputLimited,
+            stepNumber: prepared.stepNumber,
+            message: message,
+            toolCall: prepared.call,
+            toolResult: result,
+            toolManifest: prepared.manifest
+          )
+        )
+      }
       events.append(
         .init(
-          kind: .toolOutputLimited,
+          kind: .toolCallFinished,
           stepNumber: prepared.stepNumber,
-          message: message,
           toolCall: prepared.call,
           toolResult: result,
           toolManifest: prepared.manifest
         )
       )
-    }
-    events.append(
-      .init(
-        kind: .toolCallFinished,
-        stepNumber: prepared.stepNumber,
-        toolCall: prepared.call,
-        toolResult: result,
-        toolManifest: prepared.manifest
+      return ToolExecutionOutput(index: prepared.index, result: result, events: events, failure: nil)
+    } catch KarmaError.interrupted(let reason) {
+      throw KarmaError.interrupted(reason: reason)
+    } catch {
+      throw ToolExecutionFailure(
+        index: prepared.index,
+        underlyingError: error,
+        event: AgentEvent(
+          kind: .toolCallFailed,
+          stepNumber: prepared.stepNumber,
+          message: String(describing: error),
+          errorType: String(reflecting: Swift.type(of: error)),
+          errorDescription: String(describing: error),
+          toolCall: prepared.call,
+          toolManifest: prepared.manifest
+        )
       )
-    )
-    return ToolExecutionOutput(index: prepared.index, result: result, events: events)
+    }
   }
 
   private func generateModelOutput(
