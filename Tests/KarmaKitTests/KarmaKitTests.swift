@@ -679,6 +679,22 @@ import Foundation
   #expect(metrics.usage.totalTokens == nil)
 }
 
+@Test func agentEventDecodesWithoutFailureMetadata() throws {
+  let json = """
+    {
+      "kind": "runFailed",
+      "message": "older event"
+    }
+    """
+
+  let event = try JSONDecoder().decode(AgentEvent.self, from: Data(json.utf8))
+
+  #expect(event.kind == .runFailed)
+  #expect(event.message == "older event")
+  #expect(event.errorType == nil)
+  #expect(event.errorDescription == nil)
+}
+
 @Test func finalAnswerValidatorsCanRejectAnswers() async throws {
   let model = ScriptedModel(outputs: [
     .finalAnswer("   ")
@@ -900,6 +916,8 @@ import Foundation
     _ = try await agent.run("Recover")
   }
   #expect(agent.memory.events.last?.kind == .runFailed)
+  #expect(agent.memory.events.last?.errorType == "KarmaKit.KarmaError")
+  #expect(agent.memory.events.last?.errorDescription == "retryLimitExceeded(attempts: 2, reason: \"transient\")")
 }
 
 @Test func modelInputLimitFailsBeforeCallingModel() async throws {
@@ -922,6 +940,8 @@ import Foundation
   #expect(await model.generateCallCount == 0)
   #expect(agent.memory.events.map(\.kind) == [.runStarted, .runFailed])
   #expect(agent.memory.events.last?.message?.contains("modelInputTooLarge") == true)
+  #expect(agent.memory.events.last?.errorType == "KarmaKit.KarmaError")
+  #expect(agent.memory.events.last?.errorDescription?.contains("modelInputTooLarge") == true)
 }
 
 @Test func contextMessageLimitWindowsModelInputWithoutDroppingRunMemory() async throws {
@@ -1189,6 +1209,31 @@ import Foundation
   #expect(envelope.metrics.usage.outputTokens == 2)
   #expect(envelope.metrics.usage.toolDefinitionTokens == 4)
   #expect(envelope.metrics.usage.totalTokens == 14)
+}
+
+@Test func agentTraceExporterIncludesFailureMetadata() throws {
+  let run = AgentRun(
+    finalAnswer: "",
+    steps: [],
+    messages: [
+      AgentMessage(role: .system, content: "System")
+    ],
+    events: [
+      AgentEvent(
+        kind: .runFailed,
+        message: "token=trace-secret",
+        errorType: "Example.SecretError",
+        errorDescription: "token=trace-secret"
+      )
+    ]
+  )
+
+  let data = try AgentTraceExporter().data(for: run, createdAt: Date(timeIntervalSince1970: 0))
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(json.contains("\"errorType\" : \"Example.SecretError\""))
+  #expect(json.contains("\"errorDescription\" : \"token=[REDACTED]\""))
+  #expect(!json.contains("trace-secret"))
 }
 
 @Test func agentTraceExporterRedactsSensitiveFieldsByDefault() async throws {

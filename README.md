@@ -73,6 +73,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `PromptInjectionShieldValidator`: rejects answers that repeat untrusted tool-output instructions.
 - `ManagedAgentTool`: exposes an agent as a callable tool.
 - `AgentObserver`: records run, model, tool, and answer events.
+- `AgentEvent`: carries structured failure type and description for audit trails.
 - `AgentRunMetrics`: summarizes steps, retries, tool calls, interruptions, usage, and duration.
 - `FinalAnswerValidator`: validates answers before a run succeeds.
 - `RetryPolicy`: retries transient model failures.

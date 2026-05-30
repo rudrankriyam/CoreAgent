@@ -238,6 +238,8 @@ public struct AgentEvent: Codable, Equatable, Sendable {
   public var kind: AgentEventKind
   public var stepNumber: Int?
   public var message: String?
+  public var errorType: String?
+  public var errorDescription: String?
   public var toolCall: ToolCall?
   public var toolResult: ToolResult?
   public var toolManifest: ToolManifest?
@@ -246,6 +248,8 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     kind: AgentEventKind,
     stepNumber: Int? = nil,
     message: String? = nil,
+    errorType: String? = nil,
+    errorDescription: String? = nil,
     toolCall: ToolCall? = nil,
     toolResult: ToolResult? = nil,
     toolManifest: ToolManifest? = nil
@@ -253,6 +257,8 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     self.kind = kind
     self.stepNumber = stepNumber
     self.message = message
+    self.errorType = errorType
+    self.errorDescription = errorDescription
     self.toolCall = toolCall
     self.toolResult = toolResult
     self.toolManifest = toolManifest
@@ -263,6 +269,8 @@ public struct AgentEvent: Codable, Equatable, Sendable {
       kind: kind,
       stepNumber: stepNumber,
       message: message.map(policy.redact),
+      errorType: errorType,
+      errorDescription: errorDescription.map(policy.redact),
       toolCall: toolCall?.redacted(using: policy),
       toolResult: toolResult?.redacted(using: policy),
       toolManifest: toolManifest
@@ -1463,7 +1471,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
     guard maxSteps > 0 else {
       let error = KarmaError.maxStepsReached(maxSteps)
-      await emit(.init(kind: .runFailed, message: String(describing: error)))
+      await emitFailure(error)
       throw error
     }
 
@@ -1536,7 +1544,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       }
       throw KarmaError.interrupted(reason: reason)
     } catch {
-      await emit(.init(kind: .runFailed, message: String(describing: error)))
+      await emitFailure(error)
       throw error
     }
   }
@@ -1857,6 +1865,17 @@ public final class ToolCallingAgent: @unchecked Sendable {
     for observer in observers {
       await observer.observe(event)
     }
+  }
+
+  private func emitFailure(_ error: any Error) async {
+    await emit(
+      .init(
+        kind: .runFailed,
+        message: String(describing: error),
+        errorType: String(reflecting: Swift.type(of: error)),
+        errorDescription: String(describing: error)
+      )
+    )
   }
 }
 

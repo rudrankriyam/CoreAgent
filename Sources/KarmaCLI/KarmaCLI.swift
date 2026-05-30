@@ -233,6 +233,9 @@ private extension Array where Element == AgentEvent {
       if let message = event.message, !message.isEmpty {
         parts.append(message.replacingOccurrences(of: "\n", with: " "))
       }
+      if let errorType = event.errorType {
+        parts.append("errorType=\(errorType)")
+      }
       return parts.joined(separator: " - ")
     })
     .joined(separator: "\n")
