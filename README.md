@@ -37,6 +37,7 @@ Model providers conform to `ModelProvider` and return either tool calls or a fin
 ```bash
 swift run karma "Explain tool calling in one sentence"
 swift run karma --demo-tools "Use the multiply tool to multiply 12 by 13. Return only the number."
+swift run karma --demo-tools --list-tools
 swift run karma --verbose --demo-tools "What time is it? Use the available action."
 swift run karma --stream "Write one sentence about local agents."
 swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
@@ -53,10 +54,12 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ClosureTool`: lightweight tool wrapper for examples and simple actions.
 - `ModelProvider`: abstraction for local, hosted, or Apple-provided models.
 - `ToolCallingAgent`: minimal loop that asks a model for tool calls or a final answer.
+- `ToolManifest`: stable digest for approving and auditing tool definitions.
 - `AgentMemory`: stores messages and action steps.
 - `FoundationModelProvider`: Apple Foundation Models backend.
 - `FoundationModelToolAdapter`: bridges KarmaKit tools into Foundation Models tools.
 - `ToolExecutionPolicy`: authorizes tool calls before execution.
+- `TrustedToolExecutionPolicy`: only allows tools with approved manifest digests.
 - `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
 - `ManagedAgentTool`: exposes an agent as a callable tool.
 - `AgentObserver`: records run, model, tool, and answer events.

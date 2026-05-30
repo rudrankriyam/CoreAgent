@@ -14,6 +14,7 @@ struct KarmaCLI {
         return
       }
 
+      let listsTools = arguments.removeAll("--list-tools")
       let enablesDemoTools = arguments.removeAll("--demo-tools")
       let enablesVerboseOutput = arguments.removeAll("--verbose")
       let enablesStreaming = arguments.removeAll("--stream")
@@ -22,6 +23,12 @@ struct KarmaCLI {
       let receiptPath = arguments.removeOptionValue("--receipt")
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
       let prompt = arguments.joined(separator: " ")
+      let tools = enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : []
+
+      if listsTools {
+        try printToolManifests(for: tools)
+        return
+      }
 
       if #available(macOS 26.0, *) {
         let provider = FoundationModelProvider(
@@ -46,7 +53,7 @@ struct KarmaCLI {
         }
 
         let agent = try ToolCallingAgent(
-          tools: enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : [],
+          tools: tools,
           model: provider,
           retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
           validatesToolNames: true
@@ -87,6 +94,7 @@ struct KarmaCLI {
   private static func printUsage() {
     print("Usage: karma <prompt>")
     print("       karma --demo-tools <prompt>")
+    print("       karma --demo-tools --list-tools")
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
@@ -94,6 +102,14 @@ struct KarmaCLI {
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
+  }
+
+  private static func printToolManifests(for tools: [any Tool]) throws {
+    let manifests = try tools.map(ToolManifest.init(tool:))
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(manifests)
+    print(String(decoding: data, as: UTF8.self))
   }
 }
 

@@ -10,6 +10,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case retryLimitExceeded(attempts: Int, reason: String)
   case persistenceFailed(String)
   case maxStepsReached(Int)
+  case untrustedTool(name: String, digest: String)
 }
 
 public enum MessageRole: String, Codable, Equatable, Sendable {
@@ -107,15 +108,50 @@ public struct ToolCall: Codable, Equatable, Sendable {
   }
 }
 
+public struct ToolManifest: Codable, Equatable, Sendable {
+  public var name: String
+  public var description: String
+  public var inputs: [String: ToolInput]
+  public var digest: String
+
+  public init(name: String, description: String, inputs: [String: ToolInput]) throws {
+    self.name = name
+    self.description = description
+    self.inputs = inputs
+    self.digest = try Self.digest(name: name, description: description, inputs: inputs)
+  }
+
+  public init(tool: any Tool) throws {
+    try self.init(name: tool.name, description: tool.description, inputs: tool.inputs)
+  }
+
+  private static func digest(name: String, description: String, inputs: [String: ToolInput]) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let payload = ToolManifestPayload(name: name, description: description, inputs: inputs)
+    return SHA256.hash(data: try encoder.encode(payload))
+      .map { String(format: "%02x", $0) }
+      .joined()
+  }
+}
+
+private struct ToolManifestPayload: Codable {
+  var name: String
+  var description: String
+  var inputs: [String: ToolInput]
+}
+
 public struct ToolExecutionContext: Equatable, Sendable {
   public var call: ToolCall
   public var stepNumber: Int
   public var task: String
+  public var toolManifest: ToolManifest?
 
-  public init(call: ToolCall, stepNumber: Int, task: String) {
+  public init(call: ToolCall, stepNumber: Int, task: String, toolManifest: ToolManifest? = nil) {
     self.call = call
     self.stepNumber = stepNumber
     self.task = task
+    self.toolManifest = toolManifest
   }
 }
 
@@ -146,19 +182,22 @@ public struct AgentEvent: Codable, Equatable, Sendable {
   public var message: String?
   public var toolCall: ToolCall?
   public var toolResult: ToolResult?
+  public var toolManifest: ToolManifest?
 
   public init(
     kind: AgentEventKind,
     stepNumber: Int? = nil,
     message: String? = nil,
     toolCall: ToolCall? = nil,
-    toolResult: ToolResult? = nil
+    toolResult: ToolResult? = nil,
+    toolManifest: ToolManifest? = nil
   ) {
     self.kind = kind
     self.stepNumber = stepNumber
     self.message = message
     self.toolCall = toolCall
     self.toolResult = toolResult
+    self.toolManifest = toolManifest
   }
 }
 
@@ -208,6 +247,27 @@ public struct AllowAllToolExecutionPolicy: ToolExecutionPolicy {
   public init() {}
 
   public func authorize(_ context: ToolExecutionContext) async throws {}
+}
+
+public struct TrustedToolExecutionPolicy: ToolExecutionPolicy {
+  public var approvedDigests: Set<String>
+
+  public init(approvedDigests: Set<String>) {
+    self.approvedDigests = approvedDigests
+  }
+
+  public init(approvedManifests: [ToolManifest]) {
+    self.approvedDigests = Set(approvedManifests.map(\.digest))
+  }
+
+  public func authorize(_ context: ToolExecutionContext) async throws {
+    guard let manifest = context.toolManifest, approvedDigests.contains(manifest.digest) else {
+      throw KarmaError.untrustedTool(
+        name: context.call.name,
+        digest: context.toolManifest?.digest ?? "missing-manifest"
+      )
+    }
+  }
 }
 
 public struct ClosureTool: Tool {
@@ -811,11 +871,22 @@ public final class ToolCallingAgent: @unchecked Sendable {
               throw KarmaError.missingTool(call.name)
             }
 
-            try await toolExecutionPolicy.authorize(.init(call: call, stepNumber: stepNumber, task: task))
-            await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call))
+            let manifest = try ToolManifest(tool: tool)
+            try await toolExecutionPolicy.authorize(
+              .init(call: call, stepNumber: stepNumber, task: task, toolManifest: manifest)
+            )
+            await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call, toolManifest: manifest))
             let output = try await callTool(tool, arguments: call.arguments)
             let result = ToolResult(callID: call.id, output: output)
-            await emit(.init(kind: .toolCallFinished, stepNumber: stepNumber, toolCall: call, toolResult: result))
+            await emit(
+              .init(
+                kind: .toolCallFinished,
+                stepNumber: stepNumber,
+                toolCall: call,
+                toolResult: result,
+                toolManifest: manifest
+              )
+            )
             return result
           }
 

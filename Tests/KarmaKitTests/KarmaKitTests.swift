@@ -103,6 +103,70 @@ import Foundation
   }
 }
 
+@Test func toolManifestDigestChangesWhenToolDefinitionChanges() throws {
+  let first = try ToolManifest(
+    name: "lookup",
+    description: "Looks up public data.",
+    inputs: [
+      "query": ToolInput(type: .string, description: "Search query.")
+    ]
+  )
+  let second = try ToolManifest(
+    name: "lookup",
+    description: "Looks up private data.",
+    inputs: [
+      "query": ToolInput(type: .string, description: "Search query.")
+    ]
+  )
+
+  #expect(first.digest.count == 64)
+  #expect(first.digest != second.digest)
+}
+
+@Test func trustedToolExecutionPolicyAllowsApprovedManifestAndRecordsIt() async throws {
+  let tool = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
+    "approved"
+  }
+  let manifest = try ToolManifest(tool: tool)
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "lookup")]),
+    .finalAnswer("approved")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    toolExecutionPolicy: TrustedToolExecutionPolicy(approvedManifests: [manifest])
+  )
+
+  let run = try await agent.run("Use lookup")
+  let startedEvent = run.events.first { $0.kind == .toolCallStarted }
+
+  #expect(run.finalAnswer == "approved")
+  #expect(startedEvent?.toolManifest == manifest)
+}
+
+@Test func trustedToolExecutionPolicyRejectsChangedToolDefinition() async throws {
+  let approvedTool = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
+    "approved"
+  }
+  let changedTool = ClosureTool(name: "lookup", description: "Looks up private data.", inputs: [:]) { _ in
+    "changed"
+  }
+  let changedDigest = try ToolManifest(tool: changedTool).digest
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(name: "lookup")])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [changedTool],
+    model: model,
+    toolExecutionPolicy: TrustedToolExecutionPolicy(approvedManifests: [try ToolManifest(tool: approvedTool)])
+  )
+
+  await #expect(throws: KarmaError.untrustedTool(name: "lookup", digest: changedDigest)) {
+    _ = try await agent.run("Use lookup")
+  }
+}
+
 @Test func toolOutputWithInstructionLikeTextIsMarkedAsUntrustedData() async throws {
   let result = ToolResult(
     callID: "call_1",
@@ -245,6 +309,47 @@ import Foundation
     #expect(output.contains(#""name": "Rudrank""#))
     #expect(output.contains(#""age": 26"#))
     #expect(output.contains(#"["Tokyo", "Kyoto"]"#))
+  }
+}
+
+@Test func foundationTranscriptEventsIncludeToolManifests() async throws {
+  if #available(macOS 26.0, *) {
+    let tool = ClosureTool(
+      name: "lookup",
+      description: "Looks up public data.",
+      inputs: [
+        "query": ToolInput(type: .string, description: "Search query.")
+      ]
+    ) { _ in
+      "found"
+    }
+    let manifest = try ToolManifest(tool: tool)
+    let transcript = Transcript(entries: [
+      .toolCalls(
+        Transcript.ToolCalls([
+          Transcript.ToolCall(
+            id: "call_1",
+            toolName: "lookup",
+            arguments: GeneratedContent(properties: ["query": "karma"])
+          )
+        ])
+      ),
+      .toolOutput(
+        Transcript.ToolOutput(
+          id: "call_1",
+          toolName: "lookup",
+          segments: [.text(Transcript.TextSegment(content: "found"))]
+        )
+      )
+    ])
+
+    let events = try FoundationModelTranscriptEvents.makeEvents(from: transcript, tools: [tool])
+
+    #expect(events.count == 2)
+    #expect(events[0].toolCall == ToolCall(id: "call_1", name: "lookup"))
+    #expect(events[0].toolManifest == manifest)
+    #expect(events[1].toolResult == ToolResult(callID: "call_1", output: "found"))
+    #expect(events[1].toolManifest == manifest)
   }
 }
 

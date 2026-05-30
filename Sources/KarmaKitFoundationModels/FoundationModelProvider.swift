@@ -55,7 +55,10 @@ public struct FoundationModelProvider: StreamingModelProvider {
 
     let prompt = FoundationModelPrompt.makePrompt(messages: messages)
     let response = try await session.respond(to: prompt, options: options)
-    return .finalAnswer(response.content, events: FoundationModelTranscriptEvents.makeEvents(from: session.transcript))
+    return .finalAnswer(
+      response.content,
+      events: try FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools)
+    )
   }
 
   public func stream(
@@ -80,7 +83,10 @@ public struct FoundationModelProvider: StreamingModelProvider {
       await onPartialResponse(partialResponse.content)
     }
 
-    return .finalAnswer(finalContent, events: FoundationModelTranscriptEvents.makeEvents(from: session.transcript))
+    return .finalAnswer(
+      finalContent,
+      events: try FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools)
+    )
   }
 
   public func generateStructuredContent(
@@ -122,22 +128,42 @@ public struct FoundationModelProvider: StreamingModelProvider {
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 enum FoundationModelTranscriptEvents {
-  static func makeEvents(from transcript: Transcript) -> [AgentEvent] {
-    transcript.compactMap { entry in
+  static func makeEvents(from transcript: Transcript, tools: [any KarmaKit.Tool]) throws -> [AgentEvent] {
+    let manifestsByName = try tools.reduce(into: [String: ToolManifest]()) { partialResult, tool in
+      partialResult[tool.name] = try ToolManifest(tool: tool)
+    }
+    var events: [AgentEvent] = []
+
+    for entry in transcript {
       switch entry {
       case .toolCalls(let toolCalls):
-        let message = toolCalls.map { "\($0.toolName)(\($0.arguments.jsonString))" }.joined(separator: "\n")
-        return AgentEvent(kind: .toolCallStarted, message: message)
+        events.append(
+          contentsOf: toolCalls.map { toolCall in
+            AgentEvent(
+              kind: .toolCallStarted,
+              message: "\(toolCall.toolName)(\(toolCall.arguments.jsonString))",
+              toolCall: ToolCall(id: toolCall.id, name: toolCall.toolName),
+              toolManifest: manifestsByName[toolCall.toolName]
+            )
+          }
+        )
       case .toolOutput(let toolOutput):
-        return AgentEvent(
-          kind: .toolCallFinished,
-          message: toolOutput.segments.karmaJoinedText(),
-          toolResult: ToolResult(callID: toolOutput.id, output: toolOutput.segments.karmaJoinedText())
+        let output = toolOutput.segments.karmaJoinedText()
+        events.append(
+          AgentEvent(
+            kind: .toolCallFinished,
+            message: output,
+            toolCall: ToolCall(id: toolOutput.id, name: toolOutput.toolName),
+            toolResult: ToolResult(callID: toolOutput.id, output: output),
+            toolManifest: manifestsByName[toolOutput.toolName]
+          )
         )
       default:
-        return nil
+        break
       }
     }
+
+    return events
   }
 }
 
