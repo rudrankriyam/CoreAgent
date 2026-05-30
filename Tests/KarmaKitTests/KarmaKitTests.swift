@@ -364,6 +364,145 @@ import Foundation
   #expect(await capturedArguments.arguments?["enabled"] == "true")
 }
 
+@Test func agentRejectsMissingNestedRequiredToolArgumentsBeforeCallingTool() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(
+    name: "create_trip",
+    description: "Creates a trip.",
+    inputs: [
+      "traveler": .object(description: "Traveler.", properties: [
+        "name": ToolInput(type: .string, description: "Name."),
+        "age": ToolInput(type: .integer, description: "Age.")
+      ])
+    ]
+  ) { _ in
+    await counter.increment()
+    return "unexpected"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "call_1", name: "create_trip", arguments: ["traveler": #"{"name":"Rudrank"}"#])
+    ])
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
+
+  await #expect(throws: KarmaError.invalidToolArguments(tool: "create_trip", expected: ["traveler.age"])) {
+    _ = try await agent.run("Create trip")
+  }
+
+  #expect(await counter.value == 0)
+}
+
+@Test func agentRejectsUnexpectedNestedToolArgumentsBeforeCallingTool() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(
+    name: "create_trip",
+    description: "Creates a trip.",
+    inputs: [
+      "traveler": .object(description: "Traveler.", properties: [
+        "name": ToolInput(type: .string, description: "Name.")
+      ])
+    ]
+  ) { _ in
+    await counter.increment()
+    return "unexpected"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "call_1", name: "create_trip", arguments: ["traveler": #"{"name":"Rudrank","extra":true}"#])
+    ])
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
+
+  await #expect(throws: KarmaError.unexpectedToolArguments(tool: "create_trip", unexpected: ["traveler.extra"])) {
+    _ = try await agent.run("Create trip")
+  }
+
+  #expect(await counter.value == 0)
+}
+
+@Test func agentRejectsInvalidNestedArrayItemsBeforeCallingTool() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(
+    name: "sum",
+    description: "Sums values.",
+    inputs: [
+      "values": .array(description: "Values.", items: ToolInput(type: .integer, description: "Value."))
+    ]
+  ) { _ in
+    await counter.increment()
+    return "unexpected"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "call_1", name: "sum", arguments: ["values": #"[1,"two",3]"#])
+    ])
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
+
+  await #expect(throws: KarmaError.invalidToolArgumentValue(
+    tool: "sum",
+    argument: "values[1]",
+    expectedType: "integer",
+    value: "two"
+  )) {
+    _ = try await agent.run("Sum values")
+  }
+
+  #expect(await counter.value == 0)
+}
+
+@Test func agentCanRecoverFromNestedToolArgumentErrors() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(
+    name: "create_trip",
+    description: "Creates a trip.",
+    inputs: [
+      "traveler": .object(description: "Traveler.", properties: [
+        "name": ToolInput(type: .string, description: "Name."),
+        "age": ToolInput(type: .integer, description: "Age.")
+      ]),
+      "cities": .array(description: "Cities.", items: ToolInput(type: .string, description: "City."))
+    ]
+  ) { _ in
+    await counter.increment()
+    return "trip created"
+  }
+  let model = CapturingModel(outputs: [
+    .toolCalls([
+      ToolCall(
+        id: "bad_call",
+        name: "create_trip",
+        arguments: [
+          "traveler": #"{"name":"Rudrank"}"#,
+          "cities": #"["Mumbai","Tokyo"]"#
+        ]
+      )
+    ]),
+    .toolCalls([
+      ToolCall(
+        id: "good_call",
+        name: "create_trip",
+        arguments: [
+          "traveler": #"{"name":"Rudrank","age":30}"#,
+          "cities": #"["Mumbai","Tokyo"]"#
+        ]
+      )
+    ]),
+    .finalAnswer("trip created")
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  let run = try await agent.run("Create trip")
+
+  #expect(run.finalAnswer == "trip created")
+  #expect(await counter.value == 1)
+  #expect(run.metrics.toolFailureCount == 1)
+  #expect(run.steps[0].toolResults.first?.output.contains("traveler.age") == true)
+  let capturedMessages = await model.capturedMessages
+  #expect(capturedMessages[1].last?.content.contains("traveler.age") == true)
+}
+
 @Test func duplicateToolNamesCanBeRejectedBeforeRun() async throws {
   let firstTool = ClosureTool(name: "echo", description: "Echoes text.", inputs: [:]) { _ in "one" }
   let secondTool = ClosureTool(name: "echo", description: "Echoes text.", inputs: [:]) { _ in "two" }

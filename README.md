@@ -71,6 +71,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `FinalAnswerRecoveryMode`: turns rejected final answers into retryable model feedback, with opt-in fail-fast behavior.
 - `AgentCancellation`: interrupts runs with an inspectable reason.
 - `ToolManifest`: stable digest for approving and auditing tool definitions.
+- `ToolInput`: validates nested object properties and array items before execution.
 - `AgentMemory`: stores messages and action steps.
 - `FoundationModelProvider`: Apple Foundation Models backend.
 - `FoundationModelToolAdapter`: bridges KarmaKit tools into Foundation Models tools.

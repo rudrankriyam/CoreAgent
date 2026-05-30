@@ -2465,32 +2465,132 @@ public final class ToolCallingAgent: @unchecked Sendable {
         continue
       }
       let value = call.arguments[argument, default: ""]
-      guard Self.isValidToolArgumentValue(value, for: input.type) else {
-        throw KarmaError.invalidToolArgumentValue(
-          tool: call.name,
-          argument: argument,
-          expectedType: input.type.rawValue,
-          value: value
-        )
-      }
+      try Self.validateToolArgumentValue(value, input: input, argumentPath: argument, toolName: call.name)
     }
   }
 
-  private static func isValidToolArgumentValue(_ value: String, for type: ToolInput.ValueType) -> Bool {
-    switch type {
+  private static func validateToolArgumentValue(
+    _ value: String,
+    input: ToolInput,
+    argumentPath: String,
+    toolName: String
+  ) throws {
+    switch input.type {
     case .string, .any:
-      return true
+      return
     case .integer:
-      return Int(value) != nil
+      guard Int(value) != nil else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: value)
+      }
     case .number:
-      return Double(value) != nil
+      guard Double(value) != nil else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: value)
+      }
     case .boolean:
       let lowercasedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      return lowercasedValue == "true" || lowercasedValue == "false"
+      guard lowercasedValue == "true" || lowercasedValue == "false" else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: value)
+      }
     case .object:
-      return jsonValue(from: value) is [String: Any]
+      guard let object = jsonValue(from: value) as? [String: Any] else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: value)
+      }
+      try validateJSONObject(object, input: input, argumentPath: argumentPath, toolName: toolName)
     case .array:
-      return jsonValue(from: value) is [Any]
+      guard let array = jsonValue(from: value) as? [Any] else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: value)
+      }
+      try validateJSONArray(array, input: input, argumentPath: argumentPath, toolName: toolName)
+    }
+  }
+
+  private static func validateJSONValue(
+    _ value: Any,
+    input: ToolInput,
+    argumentPath: String,
+    toolName: String
+  ) throws {
+    switch input.type {
+    case .any:
+      return
+    case .string:
+      guard value is String else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: String(describing: value))
+      }
+    case .integer:
+      guard isJSONInteger(value) else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: String(describing: value))
+      }
+    case .number:
+      guard isJSONNumber(value) else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: String(describing: value))
+      }
+    case .boolean:
+      guard isJSONBoolean(value) else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: String(describing: value))
+      }
+    case .object:
+      guard let object = value as? [String: Any] else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: String(describing: value))
+      }
+      try validateJSONObject(object, input: input, argumentPath: argumentPath, toolName: toolName)
+    case .array:
+      guard let array = value as? [Any] else {
+        throw invalidToolArgumentValue(toolName: toolName, argumentPath: argumentPath, input: input, value: String(describing: value))
+      }
+      try validateJSONArray(array, input: input, argumentPath: argumentPath, toolName: toolName)
+    }
+  }
+
+  private static func validateJSONObject(
+    _ object: [String: Any],
+    input: ToolInput,
+    argumentPath: String,
+    toolName: String
+  ) throws {
+    let expectedProperties = Set(input.properties.keys)
+    let providedProperties = Set(object.keys)
+    let unexpectedProperties = providedProperties
+      .subtracting(expectedProperties)
+      .map { "\(argumentPath).\($0)" }
+      .sorted()
+    guard unexpectedProperties.isEmpty else {
+      throw KarmaError.unexpectedToolArguments(tool: toolName, unexpected: unexpectedProperties)
+    }
+
+    let missingProperties = input.properties
+      .filter { $0.value.isRequired && !providedProperties.contains($0.key) }
+      .map { "\(argumentPath).\($0.key)" }
+      .sorted()
+    guard missingProperties.isEmpty else {
+      throw KarmaError.invalidToolArguments(tool: toolName, expected: missingProperties)
+    }
+
+    for propertyName in providedProperties.sorted() {
+      guard let propertyInput = input.properties[propertyName], let propertyValue = object[propertyName] else {
+        continue
+      }
+      try validateJSONValue(
+        propertyValue,
+        input: propertyInput,
+        argumentPath: "\(argumentPath).\(propertyName)",
+        toolName: toolName
+      )
+    }
+  }
+
+  private static func validateJSONArray(
+    _ array: [Any],
+    input: ToolInput,
+    argumentPath: String,
+    toolName: String
+  ) throws {
+    guard let itemInput = input.items else {
+      return
+    }
+
+    for (index, item) in array.enumerated() {
+      try validateJSONValue(item, input: itemInput, argumentPath: "\(argumentPath)[\(index)]", toolName: toolName)
     }
   }
 
@@ -2500,6 +2600,58 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     return try? JSONSerialization.jsonObject(with: data)
+  }
+
+  private static func isJSONBoolean(_ value: Any) -> Bool {
+    guard let number = value as? NSNumber else {
+      return value is Bool
+    }
+
+    return CFGetTypeID(number) == CFBooleanGetTypeID()
+  }
+
+  private static func isJSONInteger(_ value: Any) -> Bool {
+    guard !isJSONBoolean(value) else {
+      return false
+    }
+
+    switch value {
+    case is Int:
+      return true
+    case let value as Double:
+      return value.rounded() == value
+    case let value as NSNumber:
+      return value.doubleValue.rounded() == value.doubleValue
+    default:
+      return false
+    }
+  }
+
+  private static func isJSONNumber(_ value: Any) -> Bool {
+    guard !isJSONBoolean(value) else {
+      return false
+    }
+
+    switch value {
+    case is Int, is Double, is NSNumber:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func invalidToolArgumentValue(
+    toolName: String,
+    argumentPath: String,
+    input: ToolInput,
+    value: String
+  ) -> KarmaError {
+    KarmaError.invalidToolArgumentValue(
+      tool: toolName,
+      argument: argumentPath,
+      expectedType: input.type.rawValue,
+      value: value
+    )
   }
 
   private func generateModelOutput(
