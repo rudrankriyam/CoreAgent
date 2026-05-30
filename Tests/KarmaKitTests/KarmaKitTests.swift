@@ -146,6 +146,120 @@ import Foundation
   #expect(failedEvent.toolCall?.id == "failing_call")
 }
 
+@Test func actionCompletionToolReturnsSummary() async throws {
+  let tool = ActionCompletionTool()
+
+  let summarized = try await tool.call(arguments: ["summary": "saved notes"])
+  let defaulted = try await tool.call(arguments: [:])
+
+  #expect(summarized == "saved notes")
+  #expect(defaulted == "done")
+  #expect(tool.inputs["summary"]?.isRequired == false)
+}
+
+@Test func actionOnlyAgentCompletesWhenDoneToolRuns() async throws {
+  let notes = NoteStore()
+  let noteTool = ClosureTool(
+    name: "write_note",
+    description: "Writes a durable note.",
+    inputs: ["text": ToolInput(type: .string, description: "Note text.")]
+  ) { arguments in
+    await notes.append(arguments["text", default: ""])
+    return "saved"
+  }
+  let doneTool = ActionCompletionTool()
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "call_1", name: "write_note", arguments: ["text": "Found launch window."])
+    ]),
+    .toolCalls([
+      ToolCall(id: "call_2", name: "done", arguments: ["summary": "notes saved"])
+    ])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [noteTool, doneTool],
+    model: model,
+    completionMode: .actionOnly(doneToolName: doneTool.name)
+  )
+
+  let run = try await agent.run("Research and write notes")
+
+  #expect(run.finalAnswer == "notes saved")
+  #expect(await notes.values == ["Found launch window."])
+  #expect(run.steps.count == 2)
+  #expect(run.steps.allSatisfy { !$0.isFinalAnswer })
+  #expect(run.metrics.toolCallCount == 2)
+  #expect(run.events.contains { $0.kind == .finalAnswerAccepted && $0.message == "notes saved" })
+}
+
+@Test func actionOnlyAgentCanRecoverFromTextFinalAnswer() async throws {
+  let doneTool = ActionCompletionTool()
+  let model = ScriptedModel(outputs: [
+    .finalAnswer("I am finished."),
+    .toolCalls([
+      ToolCall(id: "call_1", name: "done", arguments: ["summary": "completed through actions"])
+    ])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [doneTool],
+    model: model,
+    maxSteps: 2,
+    completionMode: .actionOnly(doneToolName: doneTool.name)
+  )
+
+  let run = try await agent.run("Complete through actions")
+
+  #expect(run.finalAnswer == "completed through actions")
+  #expect(run.metrics.finalAnswerRejectionCount == 1)
+  #expect(run.messages.contains { $0.role == .user && $0.content.contains("Call 'done'") })
+}
+
+@Test func actionOnlyAgentCompletesFromProviderToolEvent() async throws {
+  let doneTool = ActionCompletionTool()
+  let doneCall = ToolCall(id: "call_1", name: "done", arguments: ["summary": "native completion"])
+  let model = ScriptedModel(outputs: [
+    .finalAnswer(
+      "The work is complete.",
+      events: [
+        AgentEvent(
+          kind: .toolCallAuthorized,
+          toolCall: doneCall,
+          toolManifest: try ToolManifest(tool: doneTool)
+        )
+      ]
+    )
+  ])
+  let agent = ToolCallingAgent(
+    tools: [doneTool],
+    model: model,
+    completionMode: .actionOnly(doneToolName: doneTool.name)
+  )
+
+  let run = try await agent.run("Complete through provider-native tools")
+
+  #expect(run.finalAnswer == "native completion")
+  #expect(run.metrics.finalAnswerRejectionCount == 0)
+  #expect(run.events.contains { $0.kind == .toolCallAuthorized && $0.toolCall?.name == "done" })
+}
+
+@Test func actionOnlyAgentFailsTextFinalAnswerAtStepLimit() async throws {
+  let agent = ToolCallingAgent(
+    tools: [ActionCompletionTool()],
+    model: ScriptedModel(outputs: [
+      .finalAnswer("I am finished.")
+    ]),
+    maxSteps: 1,
+    completionMode: .actionOnly(doneToolName: "done")
+  )
+
+  await #expect(throws: KarmaError.finalAnswerRejected(
+    "This run completes through tool actions. Call 'done' after completing the required actions."
+  )) {
+    _ = try await agent.run("Complete through actions")
+  }
+  #expect(agent.memory.events.contains { $0.kind == .finalAnswerRejected })
+}
+
 @Test func closureToolValidatesRequiredArguments() async throws {
   let tool = ClosureTool(
     name: "echo",
@@ -861,6 +975,25 @@ import Foundation
   #expect(rebuiltAgent.toolCallExecutionMode == .parallel)
   #expect(rebuiltAgent.toolArgumentErrorRecoveryMode == .fail)
   #expect(rebuiltAgent.finalAnswerRecoveryMode == .fail)
+  #expect(rebuiltAgent.completionMode == .finalAnswer)
+}
+
+@Test func agentConfigurationRoundTripsActionCompletionMode() throws {
+  let configuration = AgentConfiguration(
+    systemPrompt: "System",
+    maxSteps: 3,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: .none,
+    completionMode: .actionOnly(doneToolName: "done"),
+    toolManifests: [try ToolManifest(tool: ActionCompletionTool())]
+  )
+  let data = try JSONEncoder().encode(configuration)
+  let decoded = try JSONDecoder().decode(AgentConfiguration.self, from: data)
+
+  #expect(decoded.completionMode == .actionOnly(doneToolName: "done"))
+  #expect(decoded == configuration)
 }
 
 @Test func rebuiltAgentEnforcesConfiguredToolTrustAtRuntime() async throws {
@@ -1048,6 +1181,7 @@ import Foundation
   #expect(configuration.toolCallExecutionMode == .sequential)
   #expect(configuration.toolArgumentErrorRecoveryMode == .recover)
   #expect(configuration.finalAnswerRecoveryMode == .recover)
+  #expect(configuration.completionMode == .finalAnswer)
 }
 
 @Test func agentConfigurationRejectsRuntimeToolDrift() throws {
@@ -3003,6 +3137,14 @@ private actor ArgumentCapture {
 
   func record(_ arguments: [String: String]) {
     self.arguments = arguments
+  }
+}
+
+private actor NoteStore {
+  private(set) var values: [String] = []
+
+  func append(_ value: String) {
+    values.append(value)
   }
 }
 

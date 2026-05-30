@@ -619,6 +619,34 @@ public struct ClosureTool: ToolOutputDescribing {
   }
 }
 
+public struct ActionCompletionTool: ToolOutputDescribing {
+  public var name: String
+  public var description: String
+  public var outputDescription: String?
+  public var inputs: [String: ToolInput]
+
+  public init(
+    name: String = "done",
+    description: String = "Marks an action-only run as complete.",
+    outputDescription: String? = "Completion summary."
+  ) {
+    self.name = name
+    self.description = description
+    self.outputDescription = outputDescription
+    self.inputs = [
+      "summary": ToolInput(
+        type: .string,
+        description: "Optional summary of the completed actions.",
+        isRequired: false
+      )
+    ]
+  }
+
+  public func call(arguments: [String: String]) async throws -> String {
+    arguments["summary", default: "done"]
+  }
+}
+
 public struct ManagedAgentTool: ReportingTool, ToolOutputDescribing {
   public var name: String
   public var description: String
@@ -869,6 +897,51 @@ public enum FinalAnswerRecoveryMode: String, Codable, Equatable, Sendable {
   case fail
 }
 
+public enum AgentCompletionMode: Codable, Equatable, Sendable {
+  case finalAnswer
+  case actionOnly(doneToolName: String)
+
+  private enum CodingKeys: String, CodingKey {
+    case kind
+    case doneToolName
+  }
+
+  private enum Kind: String, Codable {
+    case finalAnswer
+    case actionOnly
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    switch try container.decode(Kind.self, forKey: .kind) {
+    case .finalAnswer:
+      self = .finalAnswer
+    case .actionOnly:
+      self = try .actionOnly(doneToolName: container.decode(String.self, forKey: .doneToolName))
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    switch self {
+    case .finalAnswer:
+      try container.encode(Kind.finalAnswer, forKey: .kind)
+    case .actionOnly(let doneToolName):
+      try container.encode(Kind.actionOnly, forKey: .kind)
+      try container.encode(doneToolName, forKey: .doneToolName)
+    }
+  }
+
+  public var doneToolName: String? {
+    switch self {
+    case .finalAnswer:
+      nil
+    case .actionOnly(let doneToolName):
+      doneToolName
+    }
+  }
+}
+
 private extension Duration {
   var secondsValue: Double {
     let components = components
@@ -887,6 +960,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
   public var toolCallExecutionMode: ToolCallExecutionMode
   public var toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode
   public var finalAnswerRecoveryMode: FinalAnswerRecoveryMode
+  public var completionMode: AgentCompletionMode
   public var toolManifests: [ToolManifest]
 
   private enum CodingKeys: String, CodingKey {
@@ -900,6 +974,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     case toolCallExecutionMode
     case toolArgumentErrorRecoveryMode
     case finalAnswerRecoveryMode
+    case completionMode
     case toolManifests
   }
 
@@ -914,6 +989,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
     finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
+    completionMode: AgentCompletionMode = .finalAnswer,
     toolManifests: [ToolManifest]
   ) {
     self.version = version
@@ -926,6 +1002,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     self.toolCallExecutionMode = toolCallExecutionMode
     self.toolArgumentErrorRecoveryMode = toolArgumentErrorRecoveryMode
     self.finalAnswerRecoveryMode = finalAnswerRecoveryMode
+    self.completionMode = completionMode
     self.toolManifests = toolManifests
   }
 
@@ -949,6 +1026,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
         FinalAnswerRecoveryMode.self,
         forKey: .finalAnswerRecoveryMode
       ) ?? .recover,
+      completionMode: try container.decodeIfPresent(AgentCompletionMode.self, forKey: .completionMode) ?? .finalAnswer,
       toolManifests: try container.decode([ToolManifest].self, forKey: .toolManifests)
     )
   }
@@ -979,6 +1057,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
+      completionMode: completionMode,
       toolManifests: toolManifests.map { try $0.redacted(using: policy) }
     )
   }
@@ -1058,6 +1137,9 @@ public struct AgentDiscoveryDocument: Codable, Equatable, Sendable {
     }
     if configuration.finalAnswerRecoveryMode == .recover {
       capabilities.append("recoverable-final-answers")
+    }
+    if configuration.completionMode.doneToolName != nil {
+      capabilities.append("action-only")
     }
     if configuration.limits.maximumContextMessages != nil {
       capabilities.append("context-windowing")
@@ -2070,6 +2152,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let toolCallExecutionMode: ToolCallExecutionMode
   public let toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode
   public let finalAnswerRecoveryMode: FinalAnswerRecoveryMode
+  public let completionMode: AgentCompletionMode
   public let memoryStore: (any AgentMemoryStore)?
   public private(set) var memory: AgentMemory
   private let systemPrompt: String
@@ -2094,6 +2177,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
     finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
+    completionMode: AgentCompletionMode = .finalAnswer,
     memoryStore: (any AgentMemoryStore)? = nil
   ) {
     self.systemPrompt = systemPrompt
@@ -2116,6 +2200,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.toolCallExecutionMode = toolCallExecutionMode
     self.toolArgumentErrorRecoveryMode = toolArgumentErrorRecoveryMode
     self.finalAnswerRecoveryMode = finalAnswerRecoveryMode
+    self.completionMode = completionMode
     self.memoryStore = memoryStore
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
@@ -2150,6 +2235,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolCallExecutionMode: configuration.toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: configuration.toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: configuration.finalAnswerRecoveryMode,
+      completionMode: configuration.completionMode,
       memoryStore: memoryStore
     )
   }
@@ -2172,6 +2258,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
     finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
+    completionMode: AgentCompletionMode = .finalAnswer,
     memoryStore: (any AgentMemoryStore)? = nil,
     validatesToolNames: Bool
   ) throws {
@@ -2199,6 +2286,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
+      completionMode: completionMode,
       memoryStore: memoryStore
     )
   }
@@ -2214,6 +2302,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
+      completionMode: completionMode,
       toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
   }
@@ -2385,6 +2474,46 @@ public final class ToolCallingAgent: @unchecked Sendable {
             await emit(limitedEvent.event)
             try await checkInterruption(cancellation, stepNumber: stepNumber)
           }
+
+          if case .actionOnly = completionMode {
+            if let completion = actionCompletionResult(from: validationEvents) {
+              memory.addAssistantMessage(answer)
+              memory.addStep(.init(stepNumber: stepNumber, modelOutput: output))
+              await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: completion))
+              if memoryMode == .agentDefault {
+                try await memoryStore?.save(memory)
+              }
+              return AgentRun(
+                finalAnswer: completion,
+                steps: memory.steps,
+                messages: memory.messages,
+                events: memory.events,
+                startedAt: startedAt,
+                endedAt: Date()
+              )
+            }
+
+            let rejectionMessage = actionOnlyFinalAnswerRejectionMessage()
+            await emit(
+              .init(
+                kind: .finalAnswerRejected,
+                stepNumber: stepNumber,
+                message: rejectionMessage,
+                errorType: String(reflecting: KarmaError.self),
+                errorDescription: rejectionMessage
+              )
+            )
+
+            guard finalAnswerRecoveryMode == .recover, stepNumber < maxSteps else {
+              throw KarmaError.finalAnswerRejected(rejectionMessage)
+            }
+
+            memory.addAssistantMessage(answer)
+            memory.addTask(rejectionMessage)
+            memory.addStep(.init(stepNumber: stepNumber, modelOutput: output))
+            continue
+          }
+
           do {
             try await validateFinalAnswer(answer, task: task, providerEvents: validationEvents)
           } catch {
@@ -2436,6 +2565,20 @@ public final class ToolCallingAgent: @unchecked Sendable {
           }
 
           memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, toolResults: results))
+          if let completion = actionCompletionResult(from: calls, results: results) {
+            await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: completion))
+            if memoryMode == .agentDefault {
+              try await memoryStore?.save(memory)
+            }
+            return AgentRun(
+              finalAnswer: completion,
+              steps: memory.steps,
+              messages: memory.messages,
+              events: memory.events,
+              startedAt: startedAt,
+              endedAt: Date()
+            )
+          }
         }
       }
 
@@ -2449,6 +2592,35 @@ public final class ToolCallingAgent: @unchecked Sendable {
       await emitFailure(error)
       throw error
     }
+  }
+
+  private func actionOnlyFinalAnswerRejectionMessage() -> String {
+    guard let doneToolName = completionMode.doneToolName else {
+      return "Return a final answer only after completing the run."
+    }
+
+    return "This run completes through tool actions. Call '\(doneToolName)' after completing the required actions."
+  }
+
+  private func actionCompletionResult(from calls: [ToolCall], results: [ToolResult]) -> String? {
+    guard let doneToolName = completionMode.doneToolName,
+          let doneCall = calls.first(where: { $0.name == doneToolName }),
+          let result = results.first(where: { $0.callID == doneCall.id }) else {
+      return nil
+    }
+
+    return result.output
+  }
+
+  private func actionCompletionResult(from events: [AgentEvent]) -> String? {
+    guard let doneToolName = completionMode.doneToolName,
+          let event = events.last(where: { $0.toolCall?.name == doneToolName }) else {
+      return nil
+    }
+
+    return event.toolResult?.output
+      ?? event.toolCall?.arguments["summary"]
+      ?? "done"
   }
 
   private func executeToolCallsSequentially(

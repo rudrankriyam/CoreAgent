@@ -22,6 +22,7 @@ struct KarmaCLI {
       let enablesStreaming = arguments.removeAll("--stream")
       let enablesStructuredDemo = arguments.removeAll("--structured-demo")
       let enablesParallelTools = arguments.removeAll("--parallel-tools")
+      let enablesActionOnly = arguments.removeAll("--action-only")
       let failsOnToolArgumentError = arguments.removeAll("--fail-on-tool-argument-error")
       let failsOnFinalAnswerRejection = arguments.removeAll("--fail-on-final-answer-rejection")
       let disablesRedaction = arguments.removeAll("--no-redaction")
@@ -38,8 +39,13 @@ struct KarmaCLI {
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
       let deniedToolNames = Set(arguments.removeOptionValues("--deny-tool"))
       let prompt = arguments.joined(separator: " ")
-      let tools = enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : []
+      let tools = makeTools(
+        enablesDemoTools: enablesDemoTools,
+        enablesActionOnly: enablesActionOnly,
+        allowedFileDirectories: allowedFileDirectories
+      )
       let redactionPolicy: AgentRedactionPolicy = disablesRedaction ? .none : .standard
+      let completionMode: AgentCompletionMode = enablesActionOnly ? .actionOnly(doneToolName: "done") : .finalAnswer
       let timeouts = AgentTimeouts(
         modelGeneration: modelTimeoutSeconds.map(Duration.seconds),
         run: runTimeoutSeconds.map(Duration.seconds)
@@ -70,6 +76,7 @@ struct KarmaCLI {
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
           finalAnswerRecoveryMode: failsOnFinalAnswerRejection ? .fail : .recover,
+          completionMode: completionMode,
           redactionPolicy: redactionPolicy
         )
         return
@@ -86,6 +93,7 @@ struct KarmaCLI {
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
           finalAnswerRecoveryMode: failsOnFinalAnswerRejection ? .fail : .recover,
+          completionMode: completionMode,
           redactionPolicy: redactionPolicy
         )
         return
@@ -130,6 +138,7 @@ struct KarmaCLI {
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
           finalAnswerRecoveryMode: failsOnFinalAnswerRejection ? .fail : .recover,
+          completionMode: completionMode,
           validatesToolNames: true
         )
         let startedAt = Date()
@@ -187,6 +196,7 @@ struct KarmaCLI {
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
     print("       karma --parallel-tools --demo-tools <prompt>")
+    print("       karma --action-only --demo-tools <prompt>")
     print("       karma --fail-on-tool-argument-error --demo-tools <prompt>")
     print("       karma --fail-on-final-answer-rejection --demo-tools <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
@@ -204,6 +214,20 @@ struct KarmaCLI {
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
+  }
+
+  private static func makeTools(
+    enablesDemoTools: Bool,
+    enablesActionOnly: Bool,
+    allowedFileDirectories: [String]
+  ) -> [any Tool] {
+    var tools: [any Tool] = enablesDemoTools
+      ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories)
+      : []
+    if enablesActionOnly {
+      tools.append(ActionCompletionTool())
+    }
+    return tools
   }
 
   private static func printToolManifests(for tools: [any Tool], redactionPolicy: AgentRedactionPolicy) throws {
@@ -266,6 +290,7 @@ struct KarmaCLI {
     toolCallExecutionMode: ToolCallExecutionMode,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode,
     finalAnswerRecoveryMode: FinalAnswerRecoveryMode,
+    completionMode: AgentCompletionMode,
     redactionPolicy: AgentRedactionPolicy
   ) throws {
     let configuration = AgentConfiguration(
@@ -283,6 +308,7 @@ struct KarmaCLI {
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
+      completionMode: completionMode,
       toolManifests: try tools.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
     let encoder = JSONEncoder()
@@ -301,6 +327,7 @@ struct KarmaCLI {
     toolCallExecutionMode: ToolCallExecutionMode,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode,
     finalAnswerRecoveryMode: FinalAnswerRecoveryMode,
+    completionMode: AgentCompletionMode,
     redactionPolicy: AgentRedactionPolicy
   ) throws {
     let configuration = AgentConfiguration(
@@ -318,13 +345,16 @@ struct KarmaCLI {
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
+      completionMode: completionMode,
       toolManifests: try tools.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
     let document = AgentDiscoveryDocument(
       id: "com.rryam.karmakit.cli",
       name: "Karma CLI Agent",
       description: "Local Swift agent powered by KarmaKit.",
-      capabilities: ["foundation-models", "trace-export", "receipt-export"],
+      capabilities: completionMode.doneToolName == nil
+        ? ["foundation-models", "trace-export", "receipt-export"]
+        : ["foundation-models", "trace-export", "receipt-export", "action-only"],
       tags: ["swift", "local-first", "apple-platforms"],
       endpoints: [
         AgentEndpoint(name: "cli", transport: "stdio")

@@ -43,6 +43,7 @@ swift run karma --demo-tools --print-discovery
 swift run karma --verbose --demo-tools "What time is it? Use the available action."
 swift run karma --stream "Write one sentence about local agents."
 swift run karma --parallel-tools --demo-tools "Use the available actions when helpful."
+swift run karma --action-only --demo-tools "Calculate 7 * 6, then call done with the result."
 swift run karma --fail-on-tool-argument-error --demo-tools "Use the available actions when helpful."
 swift run karma --fail-on-final-answer-rejection --demo-tools "Use the available actions when helpful."
 swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
@@ -73,6 +74,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ToolCallExecutionMode`: runs multiple tool calls sequentially or in parallel.
 - `ToolArgumentErrorRecoveryMode`: turns invalid tool arguments into retryable tool feedback, with opt-in fail-fast behavior.
 - `FinalAnswerRecoveryMode`: turns rejected final answers into retryable model feedback, with opt-in fail-fast behavior.
+- `AgentCompletionMode`: supports final-answer runs and action-only runs that finish through a completion tool.
 - `AgentCancellation`: interrupts runs with an inspectable reason.
 - `ToolManifest`: stable digest for approving and auditing tool definitions.
 - `ToolInput`: validates nested object properties and array items before execution.
@@ -84,6 +86,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `toolCallAuthorized` and `toolCallDenied`: record policy decisions before tool execution.
 - `TrustedToolExecutionPolicy`: only allows tools with approved manifest digests.
 - `TrustedExternalToolExecutionPolicy`: only allows external tools with approved manifests and trust identities.
+- `ActionCompletionTool`: lets action-only agents mark work complete after tool-side state has been updated.
 - `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
 - `PromptInjectionShieldValidator`: rejects answers that repeat untrusted tool-output instructions.
 - `ManagedAgentTool`: exposes an agent as a callable tool.
