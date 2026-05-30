@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 public enum KarmaError: Error, Equatable, Sendable {
   case missingTool(String)
@@ -459,6 +460,42 @@ public struct AgentRunEnvelope: Codable, Equatable, Sendable {
   }
 }
 
+public struct AgentEventReceipt: Codable, Equatable, Sendable {
+  public var index: Int
+  public var previousHash: String?
+  public var hash: String
+  public var event: AgentEvent
+
+  public init(index: Int, previousHash: String?, hash: String, event: AgentEvent) {
+    self.index = index
+    self.previousHash = previousHash
+    self.hash = hash
+    self.event = event
+  }
+}
+
+public struct AgentRunReceipt: Codable, Equatable, Sendable {
+  public var version: Int
+  public var createdAt: Date
+  public var runHash: String
+  public var finalHash: String
+  public var eventReceipts: [AgentEventReceipt]
+
+  public init(
+    version: Int = 1,
+    createdAt: Date = Date(),
+    runHash: String,
+    finalHash: String,
+    eventReceipts: [AgentEventReceipt]
+  ) {
+    self.version = version
+    self.createdAt = createdAt
+    self.runHash = runHash
+    self.finalHash = finalHash
+    self.eventReceipts = eventReceipts
+  }
+}
+
 public protocol AgentMemoryStore: Sendable {
   func save(_ memory: AgentMemory) async throws
   func load() async throws -> AgentMemory?
@@ -526,6 +563,123 @@ public struct AgentTraceExporter {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try data(for: run, createdAt: createdAt).write(to: fileURL, options: [.atomic])
   }
+}
+
+public struct AgentReceiptExporter {
+  public var encoder: JSONEncoder
+
+  public init() {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    self.encoder = encoder
+  }
+
+  public func receipt(for run: AgentRun, createdAt: Date = Date()) throws -> AgentRunReceipt {
+    let stableEncoder = Self.stableEncoder()
+    let runHash = try Self.hash(stableEncoder.encode(run))
+    var previousHash: String?
+    var eventReceipts: [AgentEventReceipt] = []
+
+    for (index, event) in run.events.enumerated() {
+      let payload = AgentEventReceiptPayload(index: index, previousHash: previousHash, event: event)
+      let hash = try Self.hash(stableEncoder.encode(payload))
+      eventReceipts.append(
+        AgentEventReceipt(index: index, previousHash: previousHash, hash: hash, event: event)
+      )
+      previousHash = hash
+    }
+
+    let finalPayload = AgentRunReceiptPayload(
+      version: 1,
+      createdAt: createdAt,
+      runHash: runHash,
+      finalEventHash: previousHash
+    )
+    let finalHash = try Self.hash(stableEncoder.encode(finalPayload))
+
+    return AgentRunReceipt(
+      createdAt: createdAt,
+      runHash: runHash,
+      finalHash: finalHash,
+      eventReceipts: eventReceipts
+    )
+  }
+
+  public func data(for run: AgentRun, createdAt: Date = Date()) throws -> Data {
+    try encoder.encode(receipt(for: run, createdAt: createdAt))
+  }
+
+  public func write(_ run: AgentRun, to fileURL: URL, createdAt: Date = Date()) throws {
+    let directory = fileURL.deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try data(for: run, createdAt: createdAt).write(to: fileURL, options: [.atomic])
+  }
+
+  public func verify(_ receipt: AgentRunReceipt, for run: AgentRun? = nil) throws -> Bool {
+    let stableEncoder = Self.stableEncoder()
+
+    if let run {
+      let runHash = try Self.hash(stableEncoder.encode(run))
+      guard runHash == receipt.runHash else {
+        return false
+      }
+    }
+
+    var previousHash: String?
+    for expectedIndex in receipt.eventReceipts.indices {
+      let eventReceipt = receipt.eventReceipts[expectedIndex]
+      guard eventReceipt.index == expectedIndex, eventReceipt.previousHash == previousHash else {
+        return false
+      }
+
+      let payload = AgentEventReceiptPayload(
+        index: eventReceipt.index,
+        previousHash: eventReceipt.previousHash,
+        event: eventReceipt.event
+      )
+      let expectedHash = try Self.hash(stableEncoder.encode(payload))
+      guard eventReceipt.hash == expectedHash else {
+        return false
+      }
+      previousHash = eventReceipt.hash
+    }
+
+    let finalPayload = AgentRunReceiptPayload(
+      version: receipt.version,
+      createdAt: receipt.createdAt,
+      runHash: receipt.runHash,
+      finalEventHash: previousHash
+    )
+    let expectedFinalHash = try Self.hash(stableEncoder.encode(finalPayload))
+    return receipt.finalHash == expectedFinalHash
+  }
+
+  private static func stableEncoder() -> JSONEncoder {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    return encoder
+  }
+
+  private static func hash(_ data: Data) -> String {
+    SHA256.hash(data: data)
+      .map { String(format: "%02x", $0) }
+      .joined()
+  }
+}
+
+private struct AgentEventReceiptPayload: Codable {
+  var index: Int
+  var previousHash: String?
+  var event: AgentEvent
+}
+
+private struct AgentRunReceiptPayload: Codable {
+  var version: Int
+  var createdAt: Date
+  var runHash: String
+  var finalEventHash: String?
 }
 
 public final class ToolCallingAgent: @unchecked Sendable {

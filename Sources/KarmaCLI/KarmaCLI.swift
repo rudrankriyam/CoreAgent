@@ -19,6 +19,7 @@ struct KarmaCLI {
       let enablesStreaming = arguments.removeAll("--stream")
       let enablesStructuredDemo = arguments.removeAll("--structured-demo")
       let tracePath = arguments.removeOptionValue("--trace")
+      let receiptPath = arguments.removeOptionValue("--receipt")
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
       let prompt = arguments.joined(separator: " ")
 
@@ -69,6 +70,10 @@ struct KarmaCLI {
           try AgentTraceExporter().write(run, to: URL(fileURLWithPath: tracePath))
           fputs("Trace written to \(tracePath)\n", stderr)
         }
+        if let receiptPath {
+          try AgentReceiptExporter().write(run, to: URL(fileURLWithPath: receiptPath))
+          fputs("Receipt written to \(receiptPath)\n", stderr)
+        }
       } else {
         fputs("Karma requires macOS 26 or newer for Foundation Models.\n", stderr)
         Foundation.exit(1)
@@ -85,6 +90,7 @@ struct KarmaCLI {
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
+    print("       karma --receipt /tmp/karma-receipt.json <prompt>")
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")

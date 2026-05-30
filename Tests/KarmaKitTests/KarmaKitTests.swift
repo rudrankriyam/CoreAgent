@@ -511,6 +511,124 @@ import Foundation
   #expect(envelope.run == run)
 }
 
+@Test func agentReceiptExporterWritesDecodableReceipt() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("receipt.json")
+  let run = AgentRun(
+    finalAnswer: "done",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("done"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "done")
+    ],
+    events: [
+      AgentEvent(kind: .runStarted, message: "Start"),
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "done")
+    ]
+  )
+
+  try AgentReceiptExporter().write(run, to: fileURL, createdAt: Date(timeIntervalSince1970: 0))
+  let data = try Data(contentsOf: fileURL)
+  let decoder = JSONDecoder()
+  decoder.dateDecodingStrategy = .iso8601
+  let receipt = try decoder.decode(AgentRunReceipt.self, from: data)
+
+  #expect(receipt.version == 1)
+  #expect(receipt.createdAt == Date(timeIntervalSince1970: 0))
+  #expect(receipt.eventReceipts.count == 2)
+  #expect(receipt.eventReceipts[0].previousHash == nil)
+  #expect(receipt.eventReceipts[1].previousHash == receipt.eventReceipts[0].hash)
+  #expect(receipt.runHash.count == 64)
+  #expect(receipt.finalHash.count == 64)
+  #expect(try AgentReceiptExporter().verify(receipt, for: run))
+}
+
+@Test func agentReceiptsAreStableForTheSameRunAndDate() throws {
+  let run = AgentRun(
+    finalAnswer: "done",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("done"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "done")
+    ],
+    events: [
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "done")
+    ]
+  )
+  let exporter = AgentReceiptExporter()
+  let createdAt = Date(timeIntervalSince1970: 123)
+
+  let first = try exporter.receipt(for: run, createdAt: createdAt)
+  let second = try exporter.receipt(for: run, createdAt: createdAt)
+
+  #expect(first == second)
+}
+
+@Test func agentReceiptHashChangesWhenRunChanges() throws {
+  let original = AgentRun(
+    finalAnswer: "done",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("done"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "done")
+    ],
+    events: [
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "done")
+    ]
+  )
+  let changed = AgentRun(
+    finalAnswer: "changed",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("changed"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "changed")
+    ],
+    events: [
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "changed")
+    ]
+  )
+  let exporter = AgentReceiptExporter()
+  let createdAt = Date(timeIntervalSince1970: 123)
+
+  let originalReceipt = try exporter.receipt(for: original, createdAt: createdAt)
+  let changedReceipt = try exporter.receipt(for: changed, createdAt: createdAt)
+
+  #expect(originalReceipt.runHash != changedReceipt.runHash)
+  #expect(originalReceipt.finalHash != changedReceipt.finalHash)
+  #expect(originalReceipt.eventReceipts[0].hash != changedReceipt.eventReceipts[0].hash)
+}
+
+@Test func agentReceiptVerifierRejectsChangedEventContent() throws {
+  let run = AgentRun(
+    finalAnswer: "done",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("done"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "done")
+    ],
+    events: [
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "done")
+    ]
+  )
+  let exporter = AgentReceiptExporter()
+  var receipt = try exporter.receipt(for: run, createdAt: Date(timeIntervalSince1970: 123))
+
+  receipt.eventReceipts[0].event.message = "changed"
+
+  #expect(try !exporter.verify(receipt, for: run))
+}
+
 private enum PolicyError: Error, Equatable {
   case denied(String)
 }
