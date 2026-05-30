@@ -519,6 +519,48 @@ import Foundation
   #expect(agent.memory.events.last?.kind == .runFailed)
 }
 
+@Test func modelInputLimitFailsBeforeCallingModel() async throws {
+  let model = CountingModel(output: .finalAnswer("unused"))
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    retryPolicy: RetryPolicy(maximumRetries: 2),
+    limits: AgentLimits(maximumModelInputCharacters: 20)
+  )
+
+  do {
+    _ = try await agent.run(String(repeating: "large-input ", count: 20))
+    Issue.record("Expected model input limit failure")
+  } catch KarmaError.modelInputTooLarge(let characters, let maximum) {
+    #expect(characters > maximum)
+    #expect(maximum == 20)
+  }
+
+  #expect(await model.generateCallCount == 0)
+  #expect(agent.memory.events.map(\.kind) == [.runStarted, .runFailed])
+  #expect(agent.memory.events.last?.message?.contains("modelInputTooLarge") == true)
+}
+
+@Test func streamingRunChecksModelInputLimitBeforeCallingModel() async throws {
+  let model = CountingStreamingModel(output: .finalAnswer("unused"))
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    limits: AgentLimits(maximumModelInputCharacters: 20)
+  )
+
+  do {
+    _ = try await agent.runStreaming(String(repeating: "stream-input ", count: 20)) { _ in }
+    Issue.record("Expected model input limit failure")
+  } catch KarmaError.modelInputTooLarge(let characters, let maximum) {
+    #expect(characters > maximum)
+    #expect(maximum == 20)
+  }
+
+  #expect(await model.generateCallCount == 0)
+  #expect(await model.streamCallCount == 0)
+}
+
 @Test func toolCallsCanTimeOut() async throws {
   let slowTool = ClosureTool(name: "slow", description: "Sleeps too long.", inputs: [:]) { _ in
     try await Task.sleep(for: .milliseconds(100))
@@ -954,6 +996,44 @@ private actor FlakyModel: ModelProvider {
     }
 
     return .finalAnswer(answer)
+  }
+}
+
+private actor CountingModel: ModelProvider {
+  private(set) var generateCallCount = 0
+  private let output: ModelOutput
+
+  init(output: ModelOutput) {
+    self.output = output
+  }
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    generateCallCount += 1
+    return output
+  }
+}
+
+private actor CountingStreamingModel: StreamingModelProvider {
+  private(set) var generateCallCount = 0
+  private(set) var streamCallCount = 0
+  private let output: ModelOutput
+
+  init(output: ModelOutput) {
+    self.output = output
+  }
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    generateCallCount += 1
+    return output
+  }
+
+  func stream(
+    messages: [AgentMessage],
+    tools: [any KarmaKit.Tool],
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> ModelOutput {
+    streamCallCount += 1
+    return output
   }
 }
 

@@ -11,6 +11,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case persistenceFailed(String)
   case maxStepsReached(Int)
   case untrustedTool(name: String, digest: String)
+  case modelInputTooLarge(characters: Int, maximum: Int)
 }
 
 public enum MessageRole: String, Codable, Equatable, Sendable {
@@ -449,9 +450,11 @@ public struct AgentTimeouts: Equatable, Sendable {
 }
 
 public struct AgentLimits: Equatable, Sendable {
+  public var maximumModelInputCharacters: Int?
   public var maximumToolOutputCharacters: Int?
 
-  public init(maximumToolOutputCharacters: Int? = nil) {
+  public init(maximumModelInputCharacters: Int? = nil, maximumToolOutputCharacters: Int? = nil) {
+    self.maximumModelInputCharacters = maximumModelInputCharacters
     self.maximumToolOutputCharacters = maximumToolOutputCharacters
   }
 
@@ -1094,6 +1097,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     onPartialResponse: (@Sendable (String) async -> Void)?
   ) async throws -> ModelOutput {
     let tools = Array(tools.values)
+    try enforceModelInputLimit(messages: memory.messages, tools: tools)
     var attempt = 0
     var lastError: Error?
 
@@ -1126,6 +1130,23 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     throw KarmaError.retryLimitExceeded(attempts: attempt, reason: String(describing: lastError))
+  }
+
+  private func enforceModelInputLimit(messages: [AgentMessage], tools: [any Tool]) throws {
+    guard let maximumCharacters = limits.maximumModelInputCharacters else {
+      return
+    }
+
+    let safeMaximum = max(0, maximumCharacters)
+    let characters = messages.reduce(0) { partialResult, message in
+      partialResult + message.role.rawValue.count + message.content.count + (message.toolCallID?.count ?? 0)
+    } + tools.reduce(0) { partialResult, tool in
+      partialResult + tool.name.count + tool.description.count + tool.inputs.estimatedCharacterCount
+    }
+
+    guard characters <= safeMaximum else {
+      throw KarmaError.modelInputTooLarge(characters: characters, maximum: safeMaximum)
+    }
   }
 
   private func callTool(_ tool: any Tool, arguments: [String: String]) async throws -> String {
@@ -1231,6 +1252,24 @@ private extension ModelOutput {
     case .toolCalls(let calls):
       "toolCalls(\(calls.map(\.name).joined(separator: ",")))"
     }
+  }
+}
+
+private extension Dictionary where Key == String, Value == ToolInput {
+  var estimatedCharacterCount: Int {
+    reduce(0) { partialResult, pair in
+      partialResult + pair.key.count + pair.value.estimatedCharacterCount
+    }
+  }
+}
+
+private extension ToolInput {
+  var estimatedCharacterCount: Int {
+    type.rawValue.count
+      + description.count
+      + String(isRequired).count
+      + properties.estimatedCharacterCount
+      + (items?.estimatedCharacterCount ?? 0)
   }
 }
 
