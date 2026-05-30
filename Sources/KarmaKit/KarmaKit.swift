@@ -880,11 +880,34 @@ public struct AgentMemory: Codable, Equatable, Sendable {
   public private(set) var steps: [ActionStep]
   public private(set) var events: [AgentEvent]
 
+  private enum CodingKeys: String, CodingKey {
+    case systemPrompt
+    case messages
+    case steps
+    case events
+  }
+
   public init(systemPrompt: String) {
     self.systemPrompt = systemPrompt
     self.messages = [.init(role: .system, content: systemPrompt)]
     self.steps = []
     self.events = []
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    systemPrompt = try container.decode(String.self, forKey: .systemPrompt)
+    messages = try Self.sanitizedLoadedMessages(container.decode([AgentMessage].self, forKey: .messages))
+    steps = try container.decode([ActionStep].self, forKey: .steps)
+    events = try container.decode([AgentEvent].self, forKey: .events)
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(systemPrompt, forKey: .systemPrompt)
+    try container.encode(messages, forKey: .messages)
+    try container.encode(steps, forKey: .steps)
+    try container.encode(events, forKey: .events)
   }
 
   public mutating func reset() {
@@ -911,6 +934,20 @@ public struct AgentMemory: Codable, Equatable, Sendable {
 
   public mutating func addEvent(_ event: AgentEvent) {
     events.append(event)
+  }
+
+  private static func sanitizedLoadedMessages(_ messages: [AgentMessage]) -> [AgentMessage] {
+    messages.map { message in
+      guard message.role == .tool else {
+        return message
+      }
+
+      return AgentMessage(
+        role: message.role,
+        content: ToolOutputSanitizer.sanitize(message.content),
+        toolCallID: message.toolCallID
+      )
+    }
   }
 }
 
@@ -970,6 +1007,10 @@ public enum ToolOutputSanitizer {
   ]
 
   public static func sanitize(_ output: String) -> String {
+    guard !output.hasPrefix(untrustedDataNotice) else {
+      return output
+    }
+
     guard shouldSanitize(output) else {
       return output
     }
