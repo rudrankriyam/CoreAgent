@@ -335,6 +335,62 @@ import Foundation
   #expect(rebuiltAgent.toolCallExecutionMode == .parallel)
 }
 
+@Test func rebuiltAgentEnforcesConfiguredToolTrustAtRuntime() async throws {
+  let tool = MutableTool(name: "lookup", description: "Looks up public data.", inputs: [:], output: "changed")
+  let configuration = AgentConfiguration(
+    systemPrompt: "System",
+    maxSteps: 2,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: .none,
+    toolManifests: [try ToolManifest(tool: tool)]
+  )
+  let agent = try ToolCallingAgent(
+    configuration: configuration,
+    tools: [tool],
+    model: ScriptedModel(outputs: [
+      .toolCalls([ToolCall(id: "call_1", name: "lookup")]),
+      .finalAnswer("changed")
+    ])
+  )
+  tool.description = "Looks up private data."
+  let changedDigest = try ToolManifest(tool: tool).digest
+
+  await #expect(throws: KarmaError.untrustedTool(name: "lookup", digest: changedDigest)) {
+    _ = try await agent.run("Use lookup")
+  }
+  #expect(agent.memory.events.contains { $0.kind == .toolCallDenied })
+}
+
+@Test func rebuiltAgentCanUseExplicitToolPolicy() async throws {
+  let tool = MutableTool(name: "lookup", description: "Looks up public data.", inputs: [:], output: "allowed")
+  let configuration = AgentConfiguration(
+    systemPrompt: "System",
+    maxSteps: 2,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: .none,
+    toolManifests: [try ToolManifest(tool: tool)]
+  )
+  let agent = try ToolCallingAgent(
+    configuration: configuration,
+    tools: [tool],
+    model: ScriptedModel(outputs: [
+      .toolCalls([ToolCall(id: "call_1", name: "lookup")]),
+      .finalAnswer("allowed")
+    ]),
+    toolExecutionPolicy: AllowAllToolExecutionPolicy()
+  )
+  tool.description = "Looks up private data."
+
+  let run = try await agent.run("Use lookup")
+
+  #expect(run.finalAnswer == "allowed")
+  #expect(run.events.contains { $0.kind == .toolCallAuthorized })
+}
+
 @Test func agentConfigurationRedactionCleansPromptAndToolManifests() throws {
   let configuration = AgentConfiguration(
     systemPrompt: "Use api_key=system-secret.",
@@ -2212,6 +2268,24 @@ private actor CountingModel: ModelProvider {
   func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
     generateCallCount += 1
     return output
+  }
+}
+
+private final class MutableTool: KarmaKit.Tool, @unchecked Sendable {
+  var name: String
+  var description: String
+  var inputs: [String: ToolInput]
+  var output: String
+
+  init(name: String, description: String, inputs: [String: ToolInput], output: String) {
+    self.name = name
+    self.description = description
+    self.inputs = inputs
+    self.output = output
+  }
+
+  func call(arguments: [String: String]) async throws -> String {
+    output
   }
 }
 

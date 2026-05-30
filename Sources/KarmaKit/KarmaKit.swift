@@ -1739,7 +1739,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     configuration: AgentConfiguration,
     tools: [any Tool],
     model: any ModelProvider,
-    toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy(),
+    toolExecutionPolicy: (any ToolExecutionPolicy)? = nil,
     finalAnswerValidators: [any FinalAnswerValidator] = [
       NonEmptyFinalAnswerValidator(),
       PromptInjectionShieldValidator()
@@ -1748,12 +1748,14 @@ public final class ToolCallingAgent: @unchecked Sendable {
     memoryStore: (any AgentMemoryStore)? = nil
   ) throws {
     try configuration.verifyTools(tools)
+    let resolvedToolExecutionPolicy: any ToolExecutionPolicy = toolExecutionPolicy
+      ?? TrustedToolExecutionPolicy(approvedManifests: configuration.toolManifests)
     self.init(
       tools: tools,
       model: model,
       systemPrompt: configuration.systemPrompt,
       maxSteps: configuration.maxSteps,
-      toolExecutionPolicy: toolExecutionPolicy,
+      toolExecutionPolicy: resolvedToolExecutionPolicy,
       finalAnswerValidators: finalAnswerValidators,
       observers: observers,
       resetsMemoryBeforeRun: configuration.resetsMemoryBeforeRun,
