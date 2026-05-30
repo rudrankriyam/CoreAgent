@@ -523,6 +523,10 @@ public protocol ToolTrustDescribing: Tool {
   var trustIdentity: ToolTrustIdentity { get }
 }
 
+public protocol ToolDirectReturnDescribing: Tool {
+  var returnsDirectly: Bool { get }
+}
+
 public protocol ToolExecutionPolicy: Sendable {
   func authorize(_ context: ToolExecutionContext) async throws
 }
@@ -644,6 +648,43 @@ public struct ActionCompletionTool: ToolOutputDescribing {
 
   public func call(arguments: [String: String]) async throws -> String {
     arguments["summary", default: "done"]
+  }
+}
+
+public struct DirectReturnTool: ToolOutputDescribing, ToolDirectReturnDescribing {
+  public var name: String
+  public var description: String
+  public var outputDescription: String?
+  public var inputs: [String: ToolInput]
+  public var returnsDirectly: Bool
+  private let handler: @Sendable ([String: String]) async throws -> String
+
+  public init(
+    name: String,
+    description: String,
+    outputDescription: String? = nil,
+    inputs: [String: ToolInput],
+    returnsDirectly: Bool = true,
+    handler: @escaping @Sendable ([String: String]) async throws -> String
+  ) {
+    self.name = name
+    self.description = description
+    self.outputDescription = outputDescription
+    self.inputs = inputs
+    self.returnsDirectly = returnsDirectly
+    self.handler = handler
+  }
+
+  public func call(arguments: [String: String]) async throws -> String {
+    let missingRequiredInputs = inputs
+      .filter { $0.value.isRequired && arguments[$0.key] == nil }
+      .map(\.key)
+
+    guard missingRequiredInputs.isEmpty else {
+      throw KarmaError.invalidToolArguments(tool: name, expected: missingRequiredInputs.sorted())
+    }
+
+    return try await handler(arguments)
   }
 }
 
@@ -2514,6 +2555,23 @@ public final class ToolCallingAgent: @unchecked Sendable {
             continue
           }
 
+          if let directReturn = directReturnResult(from: validationEvents) {
+            memory.addAssistantMessage(answer)
+            memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, isFinalAnswer: true))
+            await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: directReturn))
+            if memoryMode == .agentDefault {
+              try await memoryStore?.save(memory)
+            }
+            return AgentRun(
+              finalAnswer: directReturn,
+              steps: memory.steps,
+              messages: memory.messages,
+              events: memory.events,
+              startedAt: startedAt,
+              endedAt: Date()
+            )
+          }
+
           do {
             try await validateFinalAnswer(answer, task: task, providerEvents: validationEvents)
           } catch {
@@ -2579,6 +2637,20 @@ public final class ToolCallingAgent: @unchecked Sendable {
               endedAt: Date()
             )
           }
+          if let directReturn = directReturnResult(from: calls, results: results) {
+            await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: directReturn))
+            if memoryMode == .agentDefault {
+              try await memoryStore?.save(memory)
+            }
+            return AgentRun(
+              finalAnswer: directReturn,
+              steps: memory.steps,
+              messages: memory.messages,
+              events: memory.events,
+              startedAt: startedAt,
+              endedAt: Date()
+            )
+          }
         }
       }
 
@@ -2610,6 +2682,34 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     return result.output
+  }
+
+  private func directReturnResult(from calls: [ToolCall], results: [ToolResult]) -> String? {
+    for call in calls {
+      guard let tool = tools[call.name] as? any ToolDirectReturnDescribing, tool.returnsDirectly,
+            let result = results.first(where: { $0.callID == call.id }) else {
+        continue
+      }
+
+      return result.output
+    }
+
+    return nil
+  }
+
+  private func directReturnResult(from events: [AgentEvent]) -> String? {
+    for event in events {
+      guard let call = event.toolCall,
+            let tool = tools[call.name] as? any ToolDirectReturnDescribing,
+            tool.returnsDirectly,
+            let output = event.toolResult?.output else {
+        continue
+      }
+
+      return output
+    }
+
+    return nil
   }
 
   private func actionCompletionResult(from events: [AgentEvent]) -> String? {
@@ -2763,7 +2863,13 @@ public final class ToolCallingAgent: @unchecked Sendable {
       await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call, toolManifest: manifest))
     }
     try await checkInterruption(cancellation, stepNumber: stepNumber)
-    return PreparedToolCall(index: index, call: call, tool: tool, manifest: manifest, stepNumber: stepNumber)
+    return PreparedToolCall(
+      index: index,
+      call: call,
+      tool: tool,
+      manifest: manifest,
+      stepNumber: stepNumber
+    )
   }
 
   private func executePreparedToolCall(

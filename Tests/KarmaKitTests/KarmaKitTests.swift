@@ -260,6 +260,78 @@ import Foundation
   #expect(agent.memory.events.contains { $0.kind == .finalAnswerRejected })
 }
 
+@Test func directReturnToolEndsRunWithToolOutput() async throws {
+  let tool = DirectReturnTool(
+    name: "lookup",
+    description: "Returns an authoritative answer.",
+    outputDescription: "Authoritative answer.",
+    inputs: ["query": ToolInput(type: .string, description: "Query.")]
+  ) { arguments in
+    "direct: \(arguments["query", default: ""])"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "lookup", arguments: ["query": "karma"])]),
+    .finalAnswer("should not be requested")
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  let run = try await agent.run("Lookup karma")
+
+  #expect(run.finalAnswer == "direct: karma")
+  #expect(run.steps.count == 1)
+  #expect(run.steps.first?.toolResults.first?.output == "direct: karma")
+  #expect(run.events.contains { $0.kind == .finalAnswerAccepted && $0.message == "direct: karma" })
+}
+
+@Test func directReturnToolCanBeDisabled() async throws {
+  let tool = DirectReturnTool(
+    name: "lookup",
+    description: "Returns an answer.",
+    inputs: [:],
+    returnsDirectly: false
+  ) { _ in
+    "tool output"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "lookup")]),
+    .finalAnswer("model answer")
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  let run = try await agent.run("Lookup")
+
+  #expect(run.finalAnswer == "model answer")
+  #expect(run.steps.count == 2)
+}
+
+@Test func directReturnToolCompletesFromProviderToolResultEvent() async throws {
+  let tool = DirectReturnTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
+    "direct"
+  }
+  let call = ToolCall(id: "call_1", name: "lookup")
+  let result = ToolResult(callID: "call_1", output: "provider direct")
+  let model = ScriptedModel(outputs: [
+    .finalAnswer(
+      "The provider summarized this.",
+      events: [
+        AgentEvent(
+          kind: .toolCallFinished,
+          toolCall: call,
+          toolResult: result,
+          toolManifest: try ToolManifest(tool: tool)
+        )
+      ]
+    )
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  let run = try await agent.run("Lookup")
+
+  #expect(run.finalAnswer == "provider direct")
+  #expect(run.metrics.toolResultCount == 1)
+  #expect(run.events.contains { $0.kind == .toolCallFinished && $0.toolResult?.output == "provider direct" })
+}
+
 @Test func closureToolValidatesRequiredArguments() async throws {
   let tool = ClosureTool(
     name: "echo",

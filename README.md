@@ -88,6 +88,7 @@ swift run karma --demo-tools --allow-url-host example.com "Fetch https://example
 - `TrustedToolExecutionPolicy`: only allows tools with approved manifest digests.
 - `TrustedExternalToolExecutionPolicy`: only allows external tools with approved manifests and trust identities.
 - `ActionCompletionTool`: lets action-only agents mark work complete after tool-side state has been updated.
+- `DirectReturnTool`: lets an authoritative tool result complete the run without another model turn.
 - `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
 - `PromptInjectionShieldValidator`: rejects answers that repeat untrusted tool-output instructions.
 - `ManagedAgentTool`: exposes an agent as a callable tool.
