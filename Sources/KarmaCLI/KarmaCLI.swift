@@ -30,6 +30,7 @@ struct KarmaCLI {
       let maximumModelInputCharacters = arguments.removeOptionValue("--max-model-input-chars").flatMap(Int.init)
       let maximumToolOutputCharacters = arguments.removeOptionValue("--max-tool-output-chars").flatMap(Int.init)
       let maximumContextMessages = arguments.removeOptionValue("--max-context-messages").flatMap(Int.init)
+      let maximumMemoryMessages = arguments.removeOptionValue("--max-memory-messages").flatMap(Int.init)
       let modelTimeoutSeconds = arguments.removeOptionValue("--model-timeout-seconds").flatMap(Double.init)
       let runTimeoutSeconds = arguments.removeOptionValue("--run-timeout-seconds").flatMap(Double.init)
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
@@ -53,6 +54,7 @@ struct KarmaCLI {
           maximumModelInputCharacters: maximumModelInputCharacters,
           maximumToolOutputCharacters: maximumToolOutputCharacters,
           maximumContextMessages: maximumContextMessages,
+          maximumMemoryMessages: maximumMemoryMessages,
           timeouts: timeouts,
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
@@ -68,6 +70,7 @@ struct KarmaCLI {
           maximumModelInputCharacters: maximumModelInputCharacters,
           maximumToolOutputCharacters: maximumToolOutputCharacters,
           maximumContextMessages: maximumContextMessages,
+          maximumMemoryMessages: maximumMemoryMessages,
           timeouts: timeouts,
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
@@ -110,7 +113,8 @@ struct KarmaCLI {
           limits: AgentLimits(
             maximumModelInputCharacters: maximumModelInputCharacters,
             maximumToolOutputCharacters: maximumToolOutputCharacters,
-            maximumContextMessages: maximumContextMessages
+            maximumContextMessages: maximumContextMessages,
+            maximumMemoryMessages: maximumMemoryMessages
           ),
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
@@ -180,6 +184,7 @@ struct KarmaCLI {
     print("       karma --max-model-input-chars 12000 <prompt>")
     print("       karma --max-tool-output-chars 4000 --demo-tools <prompt>")
     print("       karma --max-context-messages 12 --demo-tools <prompt>")
+    print("       karma --max-memory-messages 40 --demo-tools <prompt>")
     print("       karma --model-timeout-seconds 30 <prompt>")
     print("       karma --run-timeout-seconds 60 <prompt>")
     print("       karma --demo-tools --deny-tool calculate <prompt>")
@@ -217,6 +222,7 @@ struct KarmaCLI {
     maximumModelInputCharacters: Int?,
     maximumToolOutputCharacters: Int?,
     maximumContextMessages: Int?,
+    maximumMemoryMessages: Int?,
     timeouts: AgentTimeouts,
     toolCallExecutionMode: ToolCallExecutionMode,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode,
@@ -232,7 +238,8 @@ struct KarmaCLI {
       limits: AgentLimits(
         maximumModelInputCharacters: maximumModelInputCharacters,
         maximumToolOutputCharacters: maximumToolOutputCharacters,
-        maximumContextMessages: maximumContextMessages
+        maximumContextMessages: maximumContextMessages,
+        maximumMemoryMessages: maximumMemoryMessages
       ),
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
@@ -250,6 +257,7 @@ struct KarmaCLI {
     maximumModelInputCharacters: Int?,
     maximumToolOutputCharacters: Int?,
     maximumContextMessages: Int?,
+    maximumMemoryMessages: Int?,
     timeouts: AgentTimeouts,
     toolCallExecutionMode: ToolCallExecutionMode,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode,
@@ -265,7 +273,8 @@ struct KarmaCLI {
       limits: AgentLimits(
         maximumModelInputCharacters: maximumModelInputCharacters,
         maximumToolOutputCharacters: maximumToolOutputCharacters,
-        maximumContextMessages: maximumContextMessages
+        maximumContextMessages: maximumContextMessages,
+        maximumMemoryMessages: maximumMemoryMessages
       ),
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,

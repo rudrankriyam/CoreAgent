@@ -1965,6 +1965,63 @@ import Foundation
   #expect(secondRun.metrics.modelInputWindowedCount == 1)
 }
 
+@Test func memoryCompactionRetainsSummaryAndRecentMessages() {
+  var memory = AgentMemory(systemPrompt: "System")
+  memory.addTask("First task")
+  memory.addAssistantMessage("First answer")
+  memory.addTask("Second task")
+  memory.addAssistantMessage("Second answer")
+  memory.addTask("Third task")
+  memory.addAssistantMessage("Third answer")
+
+  let result = memory.compactMessages(maximumMessages: 4)
+
+  #expect(result?.originalMessageCount == 7)
+  #expect(result?.compactedMessageCount == 4)
+  #expect(result?.retainedMessageCount == 4)
+  #expect(memory.messages.map(\.role) == [.system, .assistant, .user, .assistant])
+  #expect(memory.messages[1].content.contains("Earlier conversation compacted: 4 messages"))
+  #expect(memory.messages[1].content.contains("First task"))
+  #expect(memory.messages[1].content.contains("Second answer"))
+  #expect(memory.messages.suffix(2).map(\.content) == ["Third task", "Third answer"])
+}
+
+@Test func memoryCompactionRunsBeforePersistedMemoryIsUsed() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("memory.json")
+  let store = FileAgentMemoryStore(fileURL: fileURL)
+  var memory = AgentMemory(systemPrompt: "System")
+  memory.addTask("Old task 1")
+  memory.addAssistantMessage("Old answer 1")
+  memory.addTask("Old task 2")
+  memory.addAssistantMessage("Old answer 2")
+  memory.addTask("Recent task")
+  memory.addAssistantMessage("Recent answer")
+  try await store.save(memory)
+
+  let model = CapturingModel(outputs: [.finalAnswer("done")])
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    resetsMemoryBeforeRun: false,
+    limits: AgentLimits(maximumMemoryMessages: 4),
+    memoryStore: store
+  )
+
+  let run = try await agent.run("Continue")
+  let capturedMessages = await model.capturedMessages
+  let storedMemory = try #require(try await store.load())
+
+  #expect(run.metrics.memoryCompactionCount == 1)
+  #expect(run.events.first?.kind == .memoryCompacted)
+  #expect(capturedMessages.first?.contains { $0.content.contains("Earlier conversation compacted") } == true)
+  #expect(capturedMessages.first?.contains { $0.content == "Old task 1" } == false)
+  #expect(capturedMessages.first?.contains { $0.content == "Recent answer" } == true)
+  #expect(storedMemory.messages.count == run.messages.count)
+  #expect(storedMemory.messages.contains { $0.content.contains("Earlier conversation compacted") })
+}
+
 @Test func modelInputMergesConsecutiveSameRoleMessagesBeforeProviderCall() async throws {
   let fileURL = FileManager.default.temporaryDirectory
     .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")

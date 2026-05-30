@@ -51,6 +51,7 @@ swift run karma --no-redaction --trace /tmp/karma-trace.json "Explain tool calli
 swift run karma --max-model-input-chars 12000 "Summarize this request."
 swift run karma --max-tool-output-chars 4000 --demo-tools "Search files for local agents and summarize the matches."
 swift run karma --max-context-messages 12 --demo-tools "Use recent context and answer briefly."
+swift run karma --max-memory-messages 40 --demo-tools "Keep memory compact while answering."
 swift run karma --model-timeout-seconds 30 "Answer with a bounded model call."
 swift run karma --run-timeout-seconds 60 "Answer within a bounded run."
 swift run karma --structured-demo "Summarize Foundation Models agents."
@@ -98,6 +99,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `AgentTimeouts`: limits long-running runs, model generation, and tool calls.
 - `AgentLimits`: caps oversized model input and tool output before they create brittle runs.
 - `AgentLimits.maximumContextMessages`: keeps model input bounded while preserving full run memory.
+- `AgentLimits.maximumMemoryMessages`: compacts retained memory before long-lived runs continue.
 - `AgentMessageNormalizer`: merges compatible consecutive messages before provider calls.
 - `StreamingModelProvider`: streams partial responses when a provider supports it.
 - `AgentRedactionPolicy`: removes token-like values from exported traces and receipts by default.

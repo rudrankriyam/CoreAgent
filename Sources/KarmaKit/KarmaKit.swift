@@ -287,6 +287,7 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case toolOutputLimited
   case modelInputWindowed
   case modelInputNormalized
+  case memoryCompacted
   case partialResponse
   case finalAnswerRejected
   case finalAnswerAccepted
@@ -771,15 +772,18 @@ public struct AgentLimits: Codable, Equatable, Sendable {
   public var maximumModelInputCharacters: Int?
   public var maximumToolOutputCharacters: Int?
   public var maximumContextMessages: Int?
+  public var maximumMemoryMessages: Int?
 
   public init(
     maximumModelInputCharacters: Int? = nil,
     maximumToolOutputCharacters: Int? = nil,
-    maximumContextMessages: Int? = nil
+    maximumContextMessages: Int? = nil,
+    maximumMemoryMessages: Int? = nil
   ) {
     self.maximumModelInputCharacters = maximumModelInputCharacters
     self.maximumToolOutputCharacters = maximumToolOutputCharacters
     self.maximumContextMessages = maximumContextMessages
+    self.maximumMemoryMessages = maximumMemoryMessages
   }
 
   public static let none = AgentLimits()
@@ -993,6 +997,9 @@ public struct AgentDiscoveryDocument: Codable, Equatable, Sendable {
     if configuration.limits.maximumContextMessages != nil {
       capabilities.append("context-windowing")
     }
+    if configuration.limits.maximumMemoryMessages != nil {
+      capabilities.append("memory-compaction")
+    }
     if !configuration.toolManifests.isEmpty {
       capabilities.append("tool-manifest-digests")
     }
@@ -1095,6 +1102,40 @@ public struct AgentMemory: Codable, Equatable, Sendable {
     events.append(event)
   }
 
+  @discardableResult
+  public mutating func compactMessages(maximumMessages: Int) -> AgentMemoryCompactionResult? {
+    let safeMaximum = max(3, maximumMessages)
+    guard messages.count > safeMaximum else {
+      return nil
+    }
+
+    let systemMessage = messages.first { $0.role == .system }
+    let nonSystemMessages = messages.filter { $0.role != .system }
+    let retainedNonSystemCount = max(1, safeMaximum - (systemMessage == nil ? 1 : 2))
+    let retainedMessages = Array(nonSystemMessages.suffix(retainedNonSystemCount))
+    let compactedMessages = Array(nonSystemMessages.dropLast(retainedMessages.count))
+    guard !compactedMessages.isEmpty else {
+      return nil
+    }
+
+    let summary = AgentMemoryCompactionSummary(
+      messageCount: compactedMessages.count,
+      firstRole: compactedMessages.first?.role,
+      lastRole: compactedMessages.last?.role,
+      firstExcerpt: compactedMessages.first.map(Self.compactionExcerpt),
+      lastExcerpt: compactedMessages.last.map(Self.compactionExcerpt)
+    )
+    let summaryMessage = AgentMessage(role: .assistant, content: summary.message)
+    messages = systemMessage.map { [$0, summaryMessage] + retainedMessages } ?? [summaryMessage] + retainedMessages
+
+    return AgentMemoryCompactionResult(
+      originalMessageCount: compactedMessages.count + retainedMessages.count + (systemMessage == nil ? 0 : 1),
+      compactedMessageCount: compactedMessages.count,
+      retainedMessageCount: messages.count,
+      summary: summary.message
+    )
+  }
+
   private static func sanitizedLoadedMessages(_ messages: [AgentMessage]) -> [AgentMessage] {
     messages.map { message in
       guard message.role == .tool else {
@@ -1107,6 +1148,47 @@ public struct AgentMemory: Codable, Equatable, Sendable {
         toolCallID: message.toolCallID
       )
     }
+  }
+
+  private static func compactionExcerpt(_ message: AgentMessage) -> String {
+    String(message.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
+  }
+}
+
+public struct AgentMemoryCompactionResult: Codable, Equatable, Sendable {
+  public var originalMessageCount: Int
+  public var compactedMessageCount: Int
+  public var retainedMessageCount: Int
+  public var summary: String
+
+  public init(
+    originalMessageCount: Int,
+    compactedMessageCount: Int,
+    retainedMessageCount: Int,
+    summary: String
+  ) {
+    self.originalMessageCount = originalMessageCount
+    self.compactedMessageCount = compactedMessageCount
+    self.retainedMessageCount = retainedMessageCount
+    self.summary = summary
+  }
+}
+
+private struct AgentMemoryCompactionSummary {
+  var messageCount: Int
+  var firstRole: MessageRole?
+  var lastRole: MessageRole?
+  var firstExcerpt: String?
+  var lastExcerpt: String?
+
+  var message: String {
+    let first = firstExcerpt.map { "\($0)" } ?? ""
+    let last = lastExcerpt.map { "\($0)" } ?? ""
+    let firstRoleText = firstRole?.rawValue ?? "unknown"
+    let lastRoleText = lastRole?.rawValue ?? "unknown"
+    return """
+    Earlier conversation compacted: \(messageCount) messages from \(firstRoleText) through \(lastRoleText). First: \(first) Last: \(last)
+    """
   }
 }
 
@@ -1385,6 +1467,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
   public var limitedToolOutputCount: Int
   public var modelInputWindowedCount: Int
   public var modelInputNormalizedCount: Int
+  public var memoryCompactionCount: Int
   public var partialResponseCount: Int
   public var finalAnswerRejectionCount: Int
   public var isInterrupted: Bool
@@ -1405,6 +1488,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     case limitedToolOutputCount
     case modelInputWindowedCount
     case modelInputNormalizedCount
+    case memoryCompactionCount
     case modelRetryCount
     case partialResponseCount
     case finalAnswerRejectionCount
@@ -1428,6 +1512,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     limitedToolOutputCount: Int,
     modelInputWindowedCount: Int = 0,
     modelInputNormalizedCount: Int = 0,
+    memoryCompactionCount: Int = 0,
     partialResponseCount: Int,
     finalAnswerRejectionCount: Int = 0,
     isInterrupted: Bool,
@@ -1448,6 +1533,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     self.limitedToolOutputCount = limitedToolOutputCount
     self.modelInputWindowedCount = modelInputWindowedCount
     self.modelInputNormalizedCount = modelInputNormalizedCount
+    self.memoryCompactionCount = memoryCompactionCount
     self.partialResponseCount = partialResponseCount
     self.finalAnswerRejectionCount = finalAnswerRejectionCount
     self.isInterrupted = isInterrupted
@@ -1471,6 +1557,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       limitedToolOutputCount: run.events.filter { $0.kind == .toolOutputLimited }.count,
       modelInputWindowedCount: run.events.filter { $0.kind == .modelInputWindowed }.count,
       modelInputNormalizedCount: run.events.filter { $0.kind == .modelInputNormalized }.count,
+      memoryCompactionCount: run.events.filter { $0.kind == .memoryCompacted }.count,
       partialResponseCount: run.events.filter { $0.kind == .partialResponse }.count,
       finalAnswerRejectionCount: run.events.filter { $0.kind == .finalAnswerRejected }.count,
       isInterrupted: run.events.contains { $0.kind == .runInterrupted },
@@ -1496,6 +1583,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       limitedToolOutputCount: try container.decode(Int.self, forKey: .limitedToolOutputCount),
       modelInputWindowedCount: try container.decodeIfPresent(Int.self, forKey: .modelInputWindowedCount) ?? 0,
       modelInputNormalizedCount: try container.decodeIfPresent(Int.self, forKey: .modelInputNormalizedCount) ?? 0,
+      memoryCompactionCount: try container.decodeIfPresent(Int.self, forKey: .memoryCompactionCount) ?? 0,
       partialResponseCount: try container.decode(Int.self, forKey: .partialResponseCount),
       finalAnswerRejectionCount: try container.decodeIfPresent(Int.self, forKey: .finalAnswerRejectionCount) ?? 0,
       isInterrupted: try container.decode(Bool.self, forKey: .isInterrupted),
@@ -1826,7 +1914,7 @@ private struct AgentTraceContext {
     switch event.kind {
     case .runStarted:
       return "run"
-    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized:
+    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized, .memoryCompacted:
       return modelSpanID(stepNumber: event.stepNumber)
     case .toolCallAuthorized, .toolCallDenied:
       if let callID = event.toolCall?.id {
@@ -1853,7 +1941,7 @@ private struct AgentTraceContext {
     switch event.kind {
     case .runStarted:
       return nil
-    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized:
+    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized, .memoryCompacted:
       return "run"
     case .toolCallAuthorized, .toolCallDenied, .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
       return modelSpanID(stepNumber: event.stepNumber)
@@ -2160,6 +2248,16 @@ public final class ToolCallingAgent: @unchecked Sendable {
       memory.reset()
     } else if let storedMemory = try await memoryStore?.load() {
       memory = storedMemory
+    }
+
+    if let maximumMessages = limits.maximumMemoryMessages,
+       let compaction = memory.compactMessages(maximumMessages: maximumMessages) {
+      await emit(
+        .init(
+          kind: .memoryCompacted,
+          message: "Memory compacted from \(compaction.originalMessageCount) to \(compaction.retainedMessageCount) messages."
+        )
+      )
     }
 
     await emit(.init(kind: .runStarted, message: task))
