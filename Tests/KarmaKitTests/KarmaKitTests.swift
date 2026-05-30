@@ -826,6 +826,19 @@ import Foundation
   #expect(secondRun.messages.map(\.content).contains("Second"))
 }
 
+@Test func agentSerializesConcurrentRunsOnTheSameInstance() async throws {
+  let model = SerializingProbeModel()
+  let agent = ToolCallingAgent(tools: [], model: model)
+
+  async let first = agent.run("First")
+  async let second = agent.run("Second")
+  let answers = try await [first.finalAnswer, second.finalAnswer]
+
+  #expect(Set(answers) == ["answer-1", "answer-2"])
+  #expect(await model.maximumConcurrentGenerations == 1)
+  #expect(await model.generateCallCount == 2)
+}
+
 @Test func managedAgentToolReturnsChildAgentAnswer() async throws {
   let childAgent = ToolCallingAgent(
     tools: [],
@@ -1496,6 +1509,22 @@ private actor CallCounter {
 
   func increment() {
     value += 1
+  }
+}
+
+private actor SerializingProbeModel: ModelProvider {
+  private(set) var generateCallCount = 0
+  private(set) var maximumConcurrentGenerations = 0
+  private var runningGenerations = 0
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    generateCallCount += 1
+    let answer = "answer-\(generateCallCount)"
+    runningGenerations += 1
+    maximumConcurrentGenerations = Swift.max(maximumConcurrentGenerations, runningGenerations)
+    try await Task.sleep(for: .milliseconds(50))
+    runningGenerations -= 1
+    return .finalAnswer(answer)
   }
 }
 

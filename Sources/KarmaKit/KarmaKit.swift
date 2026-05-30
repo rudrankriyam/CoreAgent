@@ -1090,6 +1090,43 @@ private struct ToolExecutionOutput: Sendable {
   var events: [AgentEvent]
 }
 
+private actor AgentRunGate {
+  private var isRunning = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func run<T: Sendable>(_ operation: @Sendable () async throws -> T) async throws -> T {
+    await acquire()
+    do {
+      let value = try await operation()
+      release()
+      return value
+    } catch {
+      release()
+      throw error
+    }
+  }
+
+  private func acquire() async {
+    guard isRunning else {
+      isRunning = true
+      return
+    }
+
+    await withCheckedContinuation { continuation in
+      waiters.append(continuation)
+    }
+  }
+
+  private func release() {
+    guard !waiters.isEmpty else {
+      isRunning = false
+      return
+    }
+
+    waiters.removeFirst().resume()
+  }
+}
+
 public struct AgentEventReceipt: Codable, Equatable, Sendable {
   public var index: Int
   public var previousHash: String?
@@ -1332,6 +1369,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let memoryStore: (any AgentMemoryStore)?
   public private(set) var memory: AgentMemory
   private let systemPrompt: String
+  private let runGate = AgentRunGate()
 
   public init(
     tools: [any Tool],
@@ -1462,7 +1500,9 @@ public final class ToolCallingAgent: @unchecked Sendable {
   }
 
   public func run(_ task: String, cancellation: AgentCancellation? = nil) async throws -> AgentRun {
-    try await run(task, cancellation: cancellation, streaming: nil)
+    try await runGate.run {
+      try await self.runUnlocked(task, cancellation: cancellation, streaming: nil)
+    }
   }
 
   public func runStreaming(
@@ -1470,10 +1510,12 @@ public final class ToolCallingAgent: @unchecked Sendable {
     cancellation: AgentCancellation? = nil,
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> AgentRun {
-    try await run(task, cancellation: cancellation, streaming: onPartialResponse)
+    try await runGate.run {
+      try await self.runUnlocked(task, cancellation: cancellation, streaming: onPartialResponse)
+    }
   }
 
-  private func run(
+  private func runUnlocked(
     _ task: String,
     cancellation: AgentCancellation?,
     streaming onPartialResponse: (@Sendable (String) async -> Void)?
