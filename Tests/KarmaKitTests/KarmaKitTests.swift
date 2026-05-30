@@ -1047,6 +1047,76 @@ import Foundation
   #expect(report.events.allSatisfy { $0.trace != nil })
 }
 
+@Test func managedAgentToolUsesIsolatedMemoryByDefault() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("child-memory.json")
+  let store = FileAgentMemoryStore(fileURL: fileURL)
+  var retainedMemory = AgentMemory(systemPrompt: "Child system")
+  retainedMemory.addTask("Retained parent context")
+  retainedMemory.addAssistantMessage("Do not leak retained memory")
+  try await store.save(retainedMemory)
+
+  let childModel = CapturingModel(outputs: [.finalAnswer("isolated child handled it")])
+  let childAgent = ToolCallingAgent(
+    tools: [],
+    model: childModel,
+    systemPrompt: "Child system",
+    resetsMemoryBeforeRun: false,
+    memoryStore: store
+  )
+  let managedTool = ManagedAgentTool(
+    name: "delegate_to_child",
+    description: "Delegates work to a child agent.",
+    agent: childAgent
+  )
+
+  let report = try await managedTool.callWithReport(arguments: ["task": "Handle isolated task"])
+  let capturedMessages = await childModel.capturedMessages.flatMap { $0.map(\.content) }
+  let storedMemory = try await store.load()
+
+  #expect(report.output == "isolated child handled it")
+  #expect(capturedMessages.contains("Handle isolated task"))
+  #expect(!capturedMessages.contains("Retained parent context"))
+  #expect(!capturedMessages.contains("Do not leak retained memory"))
+  #expect(storedMemory == retainedMemory)
+  #expect(childAgent.memory.messages.map(\.content) == ["Child system"])
+}
+
+@Test func managedAgentToolCanOptIntoAgentDefaultMemory() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("child-memory.json")
+  let store = FileAgentMemoryStore(fileURL: fileURL)
+  var retainedMemory = AgentMemory(systemPrompt: "Child system")
+  retainedMemory.addTask("Retained child context")
+  retainedMemory.addAssistantMessage("Use retained memory")
+  try await store.save(retainedMemory)
+
+  let childModel = CapturingModel(outputs: [.finalAnswer("retained child handled it")])
+  let childAgent = ToolCallingAgent(
+    tools: [],
+    model: childModel,
+    systemPrompt: "Child system",
+    resetsMemoryBeforeRun: false,
+    memoryStore: store
+  )
+  let managedTool = ManagedAgentTool(
+    name: "delegate_to_child",
+    description: "Delegates work to a child agent.",
+    agent: childAgent,
+    memoryPolicy: .agentDefault
+  )
+
+  let report = try await managedTool.callWithReport(arguments: ["task": "Handle retained task"])
+  let capturedMessages = await childModel.capturedMessages.flatMap { $0.map(\.content) }
+
+  #expect(report.output == "retained child handled it")
+  #expect(capturedMessages.contains("Retained child context"))
+  #expect(capturedMessages.contains("Use retained memory"))
+  #expect(capturedMessages.contains("Handle retained task"))
+}
+
 @Test func managedAgentToolPropagatesChildAgentFailure() async throws {
   let childAgent = ToolCallingAgent(
     tools: [],

@@ -77,6 +77,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
 - `PromptInjectionShieldValidator`: rejects answers that repeat untrusted tool-output instructions.
 - `ManagedAgentTool`: exposes an agent as a callable tool.
+- `ManagedAgentMemoryPolicy`: runs delegated agents with isolated memory by default, with opt-in retained memory.
 - `ManagedAgentRunReport`: preserves delegated agent messages, events, and metrics in parent tool results.
 - `ManagedAgentToolError`: preserves failed delegated agent run reports for parent failure events.
 - `AgentObserver`: records run, model, tool, and answer events.

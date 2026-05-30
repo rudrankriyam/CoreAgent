@@ -362,6 +362,21 @@ public struct ManagedAgentToolError: Error, CustomStringConvertible, Sendable {
   }
 }
 
+public enum ManagedAgentMemoryPolicy: String, Codable, Equatable, Sendable {
+  case isolated
+  case agentDefault
+}
+
+private enum AgentRunMemoryMode: Sendable {
+  case agentDefault
+  case isolated
+}
+
+private struct IsolatedAgentRunError: Error, Sendable {
+  var underlyingError: any Error
+  var run: AgentRun
+}
+
 public actor AgentCancellation {
   private var reason: String?
 
@@ -505,6 +520,7 @@ public struct ManagedAgentTool: ReportingTool {
   public var inputs: [String: ToolInput]
   private let agent: ToolCallingAgent
   private let cancellation: AgentCancellation?
+  private let memoryPolicy: ManagedAgentMemoryPolicy
 
   public init(
     name: String,
@@ -512,7 +528,8 @@ public struct ManagedAgentTool: ReportingTool {
     taskInputName: String = "task",
     taskInputDescription: String = "The task for the managed agent.",
     agent: ToolCallingAgent,
-    cancellation: AgentCancellation? = nil
+    cancellation: AgentCancellation? = nil,
+    memoryPolicy: ManagedAgentMemoryPolicy = .isolated
   ) {
     self.name = name
     self.description = description
@@ -521,6 +538,7 @@ public struct ManagedAgentTool: ReportingTool {
     ]
     self.agent = agent
     self.cancellation = cancellation
+    self.memoryPolicy = memoryPolicy
   }
 
   public func call(arguments: [String: String]) async throws -> String {
@@ -533,8 +551,15 @@ public struct ManagedAgentTool: ReportingTool {
     }
 
     do {
-      let run = try await agent.run(task, cancellation: cancellation)
+      let run = switch memoryPolicy {
+      case .isolated:
+        try await agent.runWithIsolatedMemory(task, cancellation: cancellation)
+      case .agentDefault:
+        try await agent.run(task, cancellation: cancellation)
+      }
       return ToolExecutionReport(output: run.finalAnswer, managedRun: ManagedAgentRunReport(run: run))
+    } catch let error as IsolatedAgentRunError {
+      throw ManagedAgentToolError(error: error.underlyingError, managedRun: ManagedAgentRunReport(run: error.run))
     } catch {
       throw ManagedAgentToolError(error: error, managedRun: ManagedAgentRunReport(run: agent.snapshotRun()))
     }
@@ -1804,7 +1829,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
   public func run(_ task: String, cancellation: AgentCancellation? = nil) async throws -> AgentRun {
     try await runGate.run {
-      try await self.runWithTimeout(task, cancellation: cancellation, streaming: nil)
+      try await self.runWithTimeout(task, cancellation: cancellation, streaming: nil, memoryMode: .agentDefault)
     }
   }
 
@@ -1814,22 +1839,61 @@ public final class ToolCallingAgent: @unchecked Sendable {
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> AgentRun {
     try await runGate.run {
-      try await self.runWithTimeout(task, cancellation: cancellation, streaming: onPartialResponse)
+      try await self.runWithTimeout(
+        task,
+        cancellation: cancellation,
+        streaming: onPartialResponse,
+        memoryMode: .agentDefault
+      )
+    }
+  }
+
+  fileprivate func runWithIsolatedMemory(_ task: String, cancellation: AgentCancellation? = nil) async throws -> AgentRun {
+    try await runGate.run {
+      let savedMemory = self.memory
+      let savedTraceContext = self.traceContext
+      do {
+        let run = try await self.runWithTimeout(
+          task,
+          cancellation: cancellation,
+          streaming: nil,
+          memoryMode: .isolated
+        )
+        self.memory = savedMemory
+        self.traceContext = savedTraceContext
+        return run
+      } catch {
+        let failedRun = self.snapshotRun()
+        self.memory = savedMemory
+        self.traceContext = savedTraceContext
+        throw IsolatedAgentRunError(underlyingError: error, run: failedRun)
+      }
     }
   }
 
   private func runWithTimeout(
     _ task: String,
     cancellation: AgentCancellation?,
-    streaming onPartialResponse: (@Sendable (String) async -> Void)?
+    streaming onPartialResponse: (@Sendable (String) async -> Void)?,
+    memoryMode: AgentRunMemoryMode
   ) async throws -> AgentRun {
     do {
       guard let timeout = timeouts.run else {
-        return try await runUnlocked(task, cancellation: cancellation, streaming: onPartialResponse)
+        return try await runUnlocked(
+          task,
+          cancellation: cancellation,
+          streaming: onPartialResponse,
+          memoryMode: memoryMode
+        )
       }
 
       return try await withTimeout(timeout, operation: "agent.run") {
-        try await self.runUnlocked(task, cancellation: cancellation, streaming: onPartialResponse)
+        try await self.runUnlocked(
+          task,
+          cancellation: cancellation,
+          streaming: onPartialResponse,
+          memoryMode: memoryMode
+        )
       }
     } catch {
       if memory.events.last?.kind != .runFailed, memory.events.last?.kind != .runInterrupted {
@@ -1842,11 +1906,14 @@ public final class ToolCallingAgent: @unchecked Sendable {
   private func runUnlocked(
     _ task: String,
     cancellation: AgentCancellation?,
-    streaming onPartialResponse: (@Sendable (String) async -> Void)?
+    streaming onPartialResponse: (@Sendable (String) async -> Void)?,
+    memoryMode: AgentRunMemoryMode
   ) async throws -> AgentRun {
     let startedAt = Date()
     traceContext = AgentTraceContext(runID: UUID().uuidString.lowercased())
-    if resetsMemoryBeforeRun {
+    if memoryMode == .isolated {
+      memory = AgentMemory(systemPrompt: systemPrompt)
+    } else if resetsMemoryBeforeRun {
       memory.reset()
     } else if let storedMemory = try await memoryStore?.load() {
       memory = storedMemory
@@ -1898,7 +1965,9 @@ public final class ToolCallingAgent: @unchecked Sendable {
           memory.addAssistantMessage(answer)
           memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, isFinalAnswer: true))
           await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: answer))
-          try await memoryStore?.save(memory)
+          if memoryMode == .agentDefault {
+            try await memoryStore?.save(memory)
+          }
           return AgentRun(
             finalAnswer: answer,
             steps: memory.steps,
