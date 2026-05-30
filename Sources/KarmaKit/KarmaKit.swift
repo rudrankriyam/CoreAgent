@@ -641,10 +641,12 @@ extension RetryPolicy: Codable {
 public struct AgentTimeouts: Equatable, Sendable {
   public var toolCall: Duration?
   public var modelGeneration: Duration?
+  public var run: Duration?
 
-  public init(toolCall: Duration? = nil, modelGeneration: Duration? = nil) {
+  public init(toolCall: Duration? = nil, modelGeneration: Duration? = nil, run: Duration? = nil) {
     self.toolCall = toolCall
     self.modelGeneration = modelGeneration
+    self.run = run
   }
 
   public static let none = AgentTimeouts()
@@ -654,6 +656,7 @@ extension AgentTimeouts: Codable {
   private enum CodingKeys: String, CodingKey {
     case toolCallSeconds
     case modelGenerationSeconds
+    case runSeconds
   }
 
   public init(from decoder: Decoder) throws {
@@ -661,12 +664,14 @@ extension AgentTimeouts: Codable {
     toolCall = try container.decodeIfPresent(Double.self, forKey: .toolCallSeconds).map(Duration.seconds)
     modelGeneration = try container.decodeIfPresent(Double.self, forKey: .modelGenerationSeconds)
       .map(Duration.seconds)
+    run = try container.decodeIfPresent(Double.self, forKey: .runSeconds).map(Duration.seconds)
   }
 
   public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encodeIfPresent(toolCall?.secondsValue, forKey: .toolCallSeconds)
     try container.encodeIfPresent(modelGeneration?.secondsValue, forKey: .modelGenerationSeconds)
+    try container.encodeIfPresent(run?.secondsValue, forKey: .runSeconds)
   }
 }
 
@@ -1759,7 +1764,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
   public func run(_ task: String, cancellation: AgentCancellation? = nil) async throws -> AgentRun {
     try await runGate.run {
-      try await self.runUnlocked(task, cancellation: cancellation, streaming: nil)
+      try await self.runWithTimeout(task, cancellation: cancellation, streaming: nil)
     }
   }
 
@@ -1769,7 +1774,28 @@ public final class ToolCallingAgent: @unchecked Sendable {
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> AgentRun {
     try await runGate.run {
-      try await self.runUnlocked(task, cancellation: cancellation, streaming: onPartialResponse)
+      try await self.runWithTimeout(task, cancellation: cancellation, streaming: onPartialResponse)
+    }
+  }
+
+  private func runWithTimeout(
+    _ task: String,
+    cancellation: AgentCancellation?,
+    streaming onPartialResponse: (@Sendable (String) async -> Void)?
+  ) async throws -> AgentRun {
+    do {
+      guard let timeout = timeouts.run else {
+        return try await runUnlocked(task, cancellation: cancellation, streaming: onPartialResponse)
+      }
+
+      return try await withTimeout(timeout, operation: "agent.run") {
+        try await self.runUnlocked(task, cancellation: cancellation, streaming: onPartialResponse)
+      }
+    } catch {
+      if memory.events.last?.kind != .runFailed, memory.events.last?.kind != .runInterrupted {
+        await emitFailure(error)
+      }
+      throw error
     }
   }
 

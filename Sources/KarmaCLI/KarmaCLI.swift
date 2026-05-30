@@ -28,11 +28,15 @@ struct KarmaCLI {
       let maximumToolOutputCharacters = arguments.removeOptionValue("--max-tool-output-chars").flatMap(Int.init)
       let maximumContextMessages = arguments.removeOptionValue("--max-context-messages").flatMap(Int.init)
       let modelTimeoutSeconds = arguments.removeOptionValue("--model-timeout-seconds").flatMap(Double.init)
+      let runTimeoutSeconds = arguments.removeOptionValue("--run-timeout-seconds").flatMap(Double.init)
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
       let prompt = arguments.joined(separator: " ")
       let tools = enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : []
       let redactionPolicy: AgentRedactionPolicy = disablesRedaction ? .none : .standard
-      let timeouts = AgentTimeouts(modelGeneration: modelTimeoutSeconds.map(Duration.seconds))
+      let timeouts = AgentTimeouts(
+        modelGeneration: modelTimeoutSeconds.map(Duration.seconds),
+        run: runTimeoutSeconds.map(Duration.seconds)
+      )
 
       if listsTools {
         try printToolManifests(for: tools)
@@ -147,6 +151,7 @@ struct KarmaCLI {
     print("       karma --max-tool-output-chars 4000 --demo-tools <prompt>")
     print("       karma --max-context-messages 12 --demo-tools <prompt>")
     print("       karma --model-timeout-seconds 30 <prompt>")
+    print("       karma --run-timeout-seconds 60 <prompt>")
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")

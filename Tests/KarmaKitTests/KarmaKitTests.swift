@@ -1383,6 +1383,49 @@ import Foundation
   #expect(run.events.filter { $0.kind == .modelRetry }.count == 1)
 }
 
+@Test func agentRunCanTimeOut() async throws {
+  let model = SlowModel(delay: .milliseconds(100), output: .finalAnswer("late"))
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    timeouts: AgentTimeouts(run: .milliseconds(10))
+  )
+
+  do {
+    _ = try await agent.run("Answer within the run budget")
+    Issue.record("Expected run timeout")
+  } catch KarmaError.timedOut(let operation, _) {
+    #expect(operation == "agent.run")
+  }
+
+  #expect(await model.generateCallCount == 1)
+  #expect(agent.memory.events.last?.kind == .runFailed)
+  #expect(agent.snapshotRun().metrics.isFailed)
+}
+
+@Test func streamingAgentRunCanTimeOut() async throws {
+  let model = SlowStreamingModel(delay: .milliseconds(100), output: .finalAnswer("late"))
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    timeouts: AgentTimeouts(run: .milliseconds(10))
+  )
+  let recorder = PartialRecorder()
+
+  do {
+    _ = try await agent.runStreaming("Stream within the run budget") { partial in
+      await recorder.record(partial)
+    }
+    Issue.record("Expected streaming run timeout")
+  } catch KarmaError.timedOut(let operation, _) {
+    #expect(operation == "agent.run")
+  }
+
+  #expect(await model.streamCallCount == 1)
+  #expect(await recorder.partials.isEmpty)
+  #expect(agent.memory.events.last?.kind == .runFailed)
+}
+
 @Test func throwingToolRecordsToolFailureEvent() async throws {
   let tool = ClosureTool(name: "unstable", description: "Fails.", inputs: [:]) { _ in
     throw ToolFailureError.offline
