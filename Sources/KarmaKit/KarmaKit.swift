@@ -789,6 +789,11 @@ public enum ToolCallExecutionMode: String, Codable, Equatable, Sendable {
   case parallel
 }
 
+public enum ToolArgumentErrorRecoveryMode: String, Codable, Equatable, Sendable {
+  case recover
+  case fail
+}
+
 private extension Duration {
   var secondsValue: Double {
     let components = components
@@ -805,6 +810,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
   public var timeouts: AgentTimeouts
   public var limits: AgentLimits
   public var toolCallExecutionMode: ToolCallExecutionMode
+  public var toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode
   public var toolManifests: [ToolManifest]
 
   private enum CodingKeys: String, CodingKey {
@@ -816,6 +822,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     case timeouts
     case limits
     case toolCallExecutionMode
+    case toolArgumentErrorRecoveryMode
     case toolManifests
   }
 
@@ -828,6 +835,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     timeouts: AgentTimeouts,
     limits: AgentLimits,
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
+    toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
     toolManifests: [ToolManifest]
   ) {
     self.version = version
@@ -838,6 +846,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     self.timeouts = timeouts
     self.limits = limits
     self.toolCallExecutionMode = toolCallExecutionMode
+    self.toolArgumentErrorRecoveryMode = toolArgumentErrorRecoveryMode
     self.toolManifests = toolManifests
   }
 
@@ -853,6 +862,10 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
       limits: try container.decode(AgentLimits.self, forKey: .limits),
       toolCallExecutionMode: try container.decodeIfPresent(ToolCallExecutionMode.self, forKey: .toolCallExecutionMode)
         ?? .sequential,
+      toolArgumentErrorRecoveryMode: try container.decodeIfPresent(
+        ToolArgumentErrorRecoveryMode.self,
+        forKey: .toolArgumentErrorRecoveryMode
+      ) ?? .recover,
       toolManifests: try container.decode([ToolManifest].self, forKey: .toolManifests)
     )
   }
@@ -881,6 +894,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
       timeouts: timeouts,
       limits: limits,
       toolCallExecutionMode: toolCallExecutionMode,
+      toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       toolManifests: toolManifests.map { try $0.redacted(using: policy) }
     )
   }
@@ -1770,6 +1784,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let timeouts: AgentTimeouts
   public let limits: AgentLimits
   public let toolCallExecutionMode: ToolCallExecutionMode
+  public let toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode
   public let memoryStore: (any AgentMemoryStore)?
   public private(set) var memory: AgentMemory
   private let systemPrompt: String
@@ -1792,6 +1807,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     timeouts: AgentTimeouts = .none,
     limits: AgentLimits = .none,
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
+    toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
     memoryStore: (any AgentMemoryStore)? = nil
   ) {
     self.systemPrompt = systemPrompt
@@ -1812,6 +1828,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.timeouts = timeouts
     self.limits = limits
     self.toolCallExecutionMode = toolCallExecutionMode
+    self.toolArgumentErrorRecoveryMode = toolArgumentErrorRecoveryMode
     self.memoryStore = memoryStore
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
@@ -1844,6 +1861,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       timeouts: configuration.timeouts,
       limits: configuration.limits,
       toolCallExecutionMode: configuration.toolCallExecutionMode,
+      toolArgumentErrorRecoveryMode: configuration.toolArgumentErrorRecoveryMode,
       memoryStore: memoryStore
     )
   }
@@ -1864,6 +1882,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     timeouts: AgentTimeouts = .none,
     limits: AgentLimits = .none,
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
+    toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
     memoryStore: (any AgentMemoryStore)? = nil,
     validatesToolNames: Bool
   ) throws {
@@ -1889,6 +1908,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       timeouts: timeouts,
       limits: limits,
       toolCallExecutionMode: toolCallExecutionMode,
+      toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       memoryStore: memoryStore
     )
   }
@@ -1902,6 +1922,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       timeouts: timeouts,
       limits: limits,
       toolCallExecutionMode: toolCallExecutionMode,
+      toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
   }
@@ -2272,6 +2293,28 @@ public final class ToolCallingAgent: @unchecked Sendable {
       return ToolExecutionOutput(index: prepared.index, result: result, events: events, failure: nil)
     } catch KarmaError.interrupted(let reason) {
       throw KarmaError.interrupted(reason: reason)
+    } catch let error where shouldRecoverFromToolArgumentError(error) {
+      let result = ToolResult(
+        callID: prepared.call.id,
+        output: recoverableToolArgumentErrorMessage(error, tool: prepared.tool)
+      )
+      return ToolExecutionOutput(
+        index: prepared.index,
+        result: result,
+        events: [
+          AgentEvent(
+            kind: .toolCallFailed,
+            stepNumber: prepared.stepNumber,
+            message: result.output,
+            errorType: String(reflecting: Swift.type(of: error)),
+            errorDescription: String(describing: error),
+            toolCall: prepared.call,
+            toolResult: result,
+            toolManifest: prepared.manifest
+          )
+        ],
+        failure: nil
+      )
     } catch let managedFailure as ManagedAgentToolError {
       throw ToolExecutionFailure(
         index: prepared.index,
@@ -2302,6 +2345,51 @@ public final class ToolCallingAgent: @unchecked Sendable {
         )
       )
     }
+  }
+
+  private func shouldRecoverFromToolArgumentError(_ error: any Error) -> Bool {
+    guard toolArgumentErrorRecoveryMode == .recover else {
+      return false
+    }
+
+    guard let karmaError = error as? KarmaError else {
+      return false
+    }
+
+    switch karmaError {
+    case .invalidToolArguments, .unexpectedToolArguments, .invalidToolArgumentValue:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private func recoverableToolArgumentErrorMessage(_ error: any Error, tool: any Tool) -> String {
+    let requiredInputs = tool.inputs
+      .filter { $0.value.isRequired }
+      .map(\.key)
+      .sorted()
+      .joined(separator: ", ")
+    let optionalInputs = tool.inputs
+      .filter { !$0.value.isRequired }
+      .map(\.key)
+      .sorted()
+      .joined(separator: ", ")
+
+    var parts = [
+      "Tool call was not executed because its arguments were invalid.",
+      "Error: \(String(describing: error))."
+    ]
+
+    if !requiredInputs.isEmpty {
+      parts.append("Required arguments: \(requiredInputs).")
+    }
+    if !optionalInputs.isEmpty {
+      parts.append("Optional arguments: \(optionalInputs).")
+    }
+    parts.append("Call \(tool.name) again with valid arguments, or answer without this tool if it is no longer needed.")
+
+    return parts.joined(separator: " ")
   }
 
   private func validateToolArguments(_ call: ToolCall, tool: any Tool) throws {

@@ -42,6 +42,7 @@ swift run karma --demo-tools --print-config
 swift run karma --verbose --demo-tools "What time is it? Use the available action."
 swift run karma --stream "Write one sentence about local agents."
 swift run karma --parallel-tools --demo-tools "Use the available actions when helpful."
+swift run karma --fail-on-tool-argument-error --demo-tools "Use the available actions when helpful."
 swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
 swift run karma --receipt /tmp/karma-receipt.json "Explain tool calling in one sentence."
 swift run karma --no-redaction --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
@@ -65,6 +66,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ToolCallingAgent` serializes runs per instance so shared agent memory stays consistent.
 - `AgentConfiguration`: persists safe runtime settings and approved tool manifests.
 - `ToolCallExecutionMode`: runs multiple tool calls sequentially or in parallel.
+- `ToolArgumentErrorRecoveryMode`: turns invalid tool arguments into retryable tool feedback, with opt-in fail-fast behavior.
 - `AgentCancellation`: interrupts runs with an inspectable reason.
 - `ToolManifest`: stable digest for approving and auditing tool definitions.
 - `AgentMemory`: stores messages and action steps.

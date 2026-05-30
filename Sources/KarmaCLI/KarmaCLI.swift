@@ -21,6 +21,7 @@ struct KarmaCLI {
       let enablesStreaming = arguments.removeAll("--stream")
       let enablesStructuredDemo = arguments.removeAll("--structured-demo")
       let enablesParallelTools = arguments.removeAll("--parallel-tools")
+      let failsOnToolArgumentError = arguments.removeAll("--fail-on-tool-argument-error")
       let disablesRedaction = arguments.removeAll("--no-redaction")
       let tracePath = arguments.removeOptionValue("--trace")
       let receiptPath = arguments.removeOptionValue("--receipt")
@@ -52,6 +53,7 @@ struct KarmaCLI {
           maximumContextMessages: maximumContextMessages,
           timeouts: timeouts,
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
+          toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
           redactionPolicy: redactionPolicy
         )
         return
@@ -93,6 +95,7 @@ struct KarmaCLI {
             maximumContextMessages: maximumContextMessages
           ),
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
+          toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
           validatesToolNames: true
         )
         let startedAt = Date()
@@ -149,6 +152,7 @@ struct KarmaCLI {
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
     print("       karma --parallel-tools --demo-tools <prompt>")
+    print("       karma --fail-on-tool-argument-error --demo-tools <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
     print("       karma --receipt /tmp/karma-receipt.json <prompt>")
     print("       karma --no-redaction --trace /tmp/karma-trace.json <prompt>")
@@ -194,6 +198,7 @@ struct KarmaCLI {
     maximumContextMessages: Int?,
     timeouts: AgentTimeouts,
     toolCallExecutionMode: ToolCallExecutionMode,
+    toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode,
     redactionPolicy: AgentRedactionPolicy
   ) throws {
     let configuration = AgentConfiguration(
@@ -208,6 +213,7 @@ struct KarmaCLI {
         maximumContextMessages: maximumContextMessages
       ),
       toolCallExecutionMode: toolCallExecutionMode,
+      toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       toolManifests: try tools.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
     let encoder = JSONEncoder()

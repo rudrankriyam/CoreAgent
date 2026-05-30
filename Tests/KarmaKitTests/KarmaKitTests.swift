@@ -177,7 +177,7 @@ import Foundation
   let model = ScriptedModel(outputs: [
     .toolCalls([ToolCall(id: "call_1", name: "echo")])
   ])
-  let agent = ToolCallingAgent(tools: [tool], model: model)
+  let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
   await #expect(throws: KarmaError.invalidToolArguments(tool: "echo", expected: ["text"])) {
     _ = try await agent.run("Echo text")
@@ -199,7 +199,7 @@ import Foundation
   let model = ScriptedModel(outputs: [
     .toolCalls([ToolCall(id: "call_1", name: "current", arguments: ["extra": "value"])])
   ])
-  let agent = ToolCallingAgent(tools: [tool], model: model)
+  let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
   await #expect(throws: KarmaError.unexpectedToolArguments(tool: "current", unexpected: ["extra"])) {
     _ = try await agent.run("Call current")
@@ -227,7 +227,7 @@ import Foundation
   let model = ScriptedModel(outputs: [
     .toolCalls([ToolCall(id: "call_1", name: "set_count", arguments: ["count": "many"])])
   ])
-  let agent = ToolCallingAgent(tools: [tool], model: model)
+  let agent = ToolCallingAgent(tools: [tool], model: model, toolArgumentErrorRecoveryMode: .fail)
 
   await #expect(throws: KarmaError.invalidToolArgumentValue(
     tool: "set_count",
@@ -243,6 +243,82 @@ import Foundation
   #expect(failedEvent.errorDescription == """
   invalidToolArgumentValue(tool: "set_count", argument: "count", expectedType: "integer", value: "many")
   """)
+}
+
+@Test func agentCanRecoverFromInvalidToolArgumentsWithoutCallingTool() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(
+    name: "echo",
+    description: "Echoes text.",
+    inputs: [
+      "text": ToolInput(type: .string, description: "Text to echo.")
+    ]
+  ) { arguments in
+    await counter.increment()
+    return arguments["text", default: ""]
+  }
+  let model = CapturingModel(outputs: [
+    .toolCalls([ToolCall(id: "bad_call", name: "echo")]),
+    .toolCalls([ToolCall(id: "good_call", name: "echo", arguments: ["text": "hello"])]),
+    .finalAnswer("hello")
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  let run = try await agent.run("Echo hello")
+
+  #expect(run.finalAnswer == "hello")
+  #expect(await counter.value == 1)
+  #expect(run.steps.count == 3)
+  #expect(run.steps[0].toolResults.first?.callID == "bad_call")
+  #expect(run.steps[0].toolResults.first?.output.contains("Tool call was not executed") == true)
+  #expect(run.steps[1].toolResults.first?.output == "hello")
+  #expect(run.metrics.toolFailureCount == 1)
+  #expect(!run.events.contains { $0.kind == .runFailed })
+  let capturedMessages = await model.capturedMessages
+  #expect(capturedMessages.count == 3)
+  #expect(capturedMessages[1].last?.role == .tool)
+  #expect(capturedMessages[1].last?.content.contains("Required arguments: text.") == true)
+}
+
+@Test func parallelToolCallsCanRecoverInvalidArgumentsAndKeepValidResults() async throws {
+  let badCounter = CallCounter()
+  let goodCounter = CallCounter()
+  let badTool = ClosureTool(
+    name: "needs_text",
+    description: "Requires text.",
+    inputs: [
+      "text": ToolInput(type: .string, description: "Text.")
+    ]
+  ) { _ in
+    await badCounter.increment()
+    return "unexpected"
+  }
+  let goodTool = ClosureTool(name: "current", description: "Returns current value.", inputs: [:]) { _ in
+    await goodCounter.increment()
+    return "ok"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "bad_call", name: "needs_text"),
+      ToolCall(id: "good_call", name: "current")
+    ]),
+    .finalAnswer("ok")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [badTool, goodTool],
+    model: model,
+    toolCallExecutionMode: .parallel
+  )
+
+  let run = try await agent.run("Run both")
+
+  #expect(run.finalAnswer == "ok")
+  #expect(await badCounter.value == 0)
+  #expect(await goodCounter.value == 1)
+  #expect(run.steps.first?.toolResults.map(\.callID) == ["bad_call", "good_call"])
+  #expect(run.steps.first?.toolResults[0].output.contains("Tool call was not executed") == true)
+  #expect(run.steps.first?.toolResults[1].output == "ok")
+  #expect(run.metrics.toolFailureCount == 1)
 }
 
 @Test func agentAcceptsTypedToolArgumentsBeforeExecution() async throws {
@@ -502,7 +578,8 @@ import Foundation
       maximumToolOutputCharacters: 100,
       maximumContextMessages: 12
     ),
-    toolCallExecutionMode: .parallel
+    toolCallExecutionMode: .parallel,
+    toolArgumentErrorRecoveryMode: .fail
   )
   let configuration = try sourceAgent.configuration()
   let data = try JSONEncoder().encode(configuration)
@@ -525,6 +602,7 @@ import Foundation
   #expect(rebuiltAgent.limits.maximumToolOutputCharacters == 100)
   #expect(rebuiltAgent.limits.maximumContextMessages == 12)
   #expect(rebuiltAgent.toolCallExecutionMode == .parallel)
+  #expect(rebuiltAgent.toolArgumentErrorRecoveryMode == .fail)
 }
 
 @Test func rebuiltAgentEnforcesConfiguredToolTrustAtRuntime() async throws {
@@ -632,6 +710,7 @@ import Foundation
   let configuration = try JSONDecoder().decode(AgentConfiguration.self, from: Data(json.utf8))
 
   #expect(configuration.toolCallExecutionMode == .sequential)
+  #expect(configuration.toolArgumentErrorRecoveryMode == .recover)
 }
 
 @Test func agentConfigurationRejectsRuntimeToolDrift() throws {
