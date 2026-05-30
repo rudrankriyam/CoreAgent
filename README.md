@@ -295,4 +295,8 @@ Traces are useful for debugging and support. Receipts contain a hash chain that 
 
 Issues, ideas, and pull requests are welcome. Keep contributions focused on Apple-native agent workflows, inspectable execution, and APIs that feel natural in Swift apps.
 
+## Acknowledgements
+
+CoreAgent is inspired by [Hugging Face smolagents](https://github.com/huggingface/smolagents): small agent loops, tool-first execution, and readable primitives. CoreAgent brings that spirit to Swift and Apple's on-device Foundation Models stack.
+
 [![Star History Chart](https://api.star-history.com/svg?repos=rudrankriyam/CoreAgent&type=Date)](https://star-history.com/#rudrankriyam/CoreAgent&Date)
