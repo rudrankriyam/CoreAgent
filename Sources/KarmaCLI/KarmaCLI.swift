@@ -27,6 +27,8 @@ struct KarmaCLI {
       let disablesRedaction = arguments.removeAll("--no-redaction")
       let tracePath = arguments.removeOptionValue("--trace")
       let receiptPath = arguments.removeOptionValue("--receipt")
+      let receiptVerificationPath = arguments.removeOptionValue("--verify-receipt")
+      let traceVerificationPath = arguments.removeOptionValue("--verify-trace")
       let maximumModelInputCharacters = arguments.removeOptionValue("--max-model-input-chars").flatMap(Int.init)
       let maximumToolOutputCharacters = arguments.removeOptionValue("--max-tool-output-chars").flatMap(Int.init)
       let maximumContextMessages = arguments.removeOptionValue("--max-context-messages").flatMap(Int.init)
@@ -42,6 +44,15 @@ struct KarmaCLI {
         modelGeneration: modelTimeoutSeconds.map(Duration.seconds),
         run: runTimeoutSeconds.map(Duration.seconds)
       )
+
+      if let receiptVerificationPath {
+        try verifyReceipt(
+          receiptPath: receiptVerificationPath,
+          tracePath: traceVerificationPath,
+          redactionPolicy: redactionPolicy
+        )
+        return
+      }
 
       if listsTools {
         try printToolManifests(for: tools, redactionPolicy: redactionPolicy)
@@ -180,6 +191,8 @@ struct KarmaCLI {
     print("       karma --fail-on-final-answer-rejection --demo-tools <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
     print("       karma --receipt /tmp/karma-receipt.json <prompt>")
+    print("       karma --verify-receipt /tmp/karma-receipt.json")
+    print("       karma --verify-receipt /tmp/karma-receipt.json --verify-trace /tmp/karma-trace.json")
     print("       karma --no-redaction --trace /tmp/karma-trace.json <prompt>")
     print("       karma --max-model-input-chars 12000 <prompt>")
     print("       karma --max-tool-output-chars 4000 --demo-tools <prompt>")
@@ -214,6 +227,32 @@ struct KarmaCLI {
     if let receiptPath {
       try AgentReceiptExporter(redactionPolicy: redactionPolicy).write(run, to: URL(fileURLWithPath: receiptPath))
       fputs("Receipt written to \(receiptPath)\n", stderr)
+    }
+  }
+
+  private static func verifyReceipt(
+    receiptPath: String,
+    tracePath: String?,
+    redactionPolicy: AgentRedactionPolicy
+  ) throws {
+    let receiptExporter = AgentReceiptExporter(redactionPolicy: redactionPolicy)
+    let receipt = try receiptExporter.read(from: URL(fileURLWithPath: receiptPath))
+    let run: AgentRun?
+    if let tracePath {
+      let envelope = try AgentTraceExporter(redactionPolicy: redactionPolicy).read(from: URL(fileURLWithPath: tracePath))
+      run = envelope.run.redacted(using: redactionPolicy)
+    } else {
+      run = nil
+    }
+
+    guard try receiptExporter.verify(receipt, for: run) else {
+      throw KarmaCLIError.receiptVerificationFailed
+    }
+
+    if tracePath == nil {
+      print("Receipt verified.")
+    } else {
+      print("Receipt and trace verified.")
     }
   }
 
@@ -333,10 +372,13 @@ private struct DenyNamedToolsPolicy: ToolExecutionPolicy {
 }
 
 private enum KarmaCLIError: Error, CustomStringConvertible {
+  case receiptVerificationFailed
   case toolDenied(String)
 
   var description: String {
     switch self {
+    case .receiptVerificationFailed:
+      "Receipt verification failed."
     case .toolDenied(let name):
       "Tool '\(name)' was denied by CLI policy."
     }

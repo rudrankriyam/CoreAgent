@@ -2451,10 +2451,7 @@ import Foundation
   )
 
   try AgentTraceExporter().write(run, to: fileURL, createdAt: Date(timeIntervalSince1970: 0))
-  let data = try Data(contentsOf: fileURL)
-  let decoder = JSONDecoder()
-  decoder.dateDecodingStrategy = .iso8601
-  let envelope = try decoder.decode(AgentRunEnvelope.self, from: data)
+  let envelope = try AgentTraceExporter().read(from: fileURL)
 
   #expect(envelope.version == 1)
   #expect(envelope.createdAt == Date(timeIntervalSince1970: 0))
@@ -2657,10 +2654,7 @@ import Foundation
   )
 
   try AgentReceiptExporter().write(run, to: fileURL, createdAt: Date(timeIntervalSince1970: 0))
-  let data = try Data(contentsOf: fileURL)
-  let decoder = JSONDecoder()
-  decoder.dateDecodingStrategy = .iso8601
-  let receipt = try decoder.decode(AgentRunReceipt.self, from: data)
+  let receipt = try AgentReceiptExporter().read(from: fileURL)
 
   #expect(receipt.version == 1)
   #expect(receipt.createdAt == Date(timeIntervalSince1970: 0))
@@ -2670,6 +2664,70 @@ import Foundation
   #expect(receipt.runHash.count == 64)
   #expect(receipt.finalHash.count == 64)
   #expect(try AgentReceiptExporter().verify(receipt, for: run))
+}
+
+@Test func agentReceiptVerifierCanMatchTraceEnvelopeRun() throws {
+  let directoryURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+  let traceURL = directoryURL.appendingPathComponent("trace.json")
+  let receiptURL = directoryURL.appendingPathComponent("receipt.json")
+  let run = AgentRun(
+    finalAnswer: "done",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("done"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "done")
+    ],
+    events: [
+      AgentEvent(kind: .runStarted, message: "Start"),
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "done")
+    ]
+  )
+  let createdAt = Date(timeIntervalSince1970: 0)
+  let traceExporter = AgentTraceExporter()
+  let receiptExporter = AgentReceiptExporter()
+
+  try traceExporter.write(run, to: traceURL, createdAt: createdAt)
+  try receiptExporter.write(run, to: receiptURL, createdAt: createdAt)
+  let envelope = try traceExporter.read(from: traceURL)
+  let receipt = try receiptExporter.read(from: receiptURL)
+
+  #expect(try receiptExporter.verify(receipt, for: envelope.run))
+}
+
+@Test func agentReceiptVerifierRejectsMismatchedTraceEnvelopeRun() throws {
+  let original = AgentRun(
+    finalAnswer: "done",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("done"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "done")
+    ],
+    events: [
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "done")
+    ]
+  )
+  let changed = AgentRun(
+    finalAnswer: "changed",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("changed"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "changed")
+    ],
+    events: [
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "changed")
+    ]
+  )
+  let exporter = AgentReceiptExporter()
+  let receipt = try exporter.receipt(for: original, createdAt: Date(timeIntervalSince1970: 0))
+
+  #expect(try !exporter.verify(receipt, for: changed))
 }
 
 @Test func agentReceiptExporterHashesRedactedRunByDefault() throws {

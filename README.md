@@ -47,6 +47,7 @@ swift run karma --fail-on-tool-argument-error --demo-tools "Use the available ac
 swift run karma --fail-on-final-answer-rejection --demo-tools "Use the available actions when helpful."
 swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
 swift run karma --receipt /tmp/karma-receipt.json "Explain tool calling in one sentence."
+swift run karma --verify-receipt /tmp/karma-receipt.json --verify-trace /tmp/karma-trace.json
 swift run karma --no-redaction --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
 swift run karma --max-model-input-chars 12000 "Summarize this request."
 swift run karma --max-tool-output-chars 4000 --demo-tools "Search files for local agents and summarize the matches."

@@ -1764,6 +1764,7 @@ public struct FileAgentMemoryStore: AgentMemoryStore {
 
 public struct AgentTraceExporter {
   public var encoder: JSONEncoder
+  public var decoder: JSONDecoder
   public var redactionPolicy: AgentRedactionPolicy
 
   public init(redactionPolicy: AgentRedactionPolicy = .standard) {
@@ -1771,6 +1772,9 @@ public struct AgentTraceExporter {
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
     self.encoder = encoder
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    self.decoder = decoder
     self.redactionPolicy = redactionPolicy
   }
 
@@ -1783,10 +1787,16 @@ public struct AgentTraceExporter {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try data(for: run, createdAt: createdAt).write(to: fileURL, options: [.atomic])
   }
+
+  public func read(from fileURL: URL) throws -> AgentRunEnvelope {
+    let data = try Data(contentsOf: fileURL)
+    return try decoder.decode(AgentRunEnvelope.self, from: data)
+  }
 }
 
 public struct AgentReceiptExporter {
   public var encoder: JSONEncoder
+  public var decoder: JSONDecoder
   public var redactionPolicy: AgentRedactionPolicy
 
   public init(redactionPolicy: AgentRedactionPolicy = .standard) {
@@ -1794,6 +1804,9 @@ public struct AgentReceiptExporter {
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
     self.encoder = encoder
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    self.decoder = decoder
     self.redactionPolicy = redactionPolicy
   }
 
@@ -1837,6 +1850,11 @@ public struct AgentReceiptExporter {
     let directory = fileURL.deletingLastPathComponent()
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try data(for: run, createdAt: createdAt).write(to: fileURL, options: [.atomic])
+  }
+
+  public func read(from fileURL: URL) throws -> AgentRunReceipt {
+    let data = try Data(contentsOf: fileURL)
+    return try decoder.decode(AgentRunReceipt.self, from: data)
   }
 
   public func verify(_ receipt: AgentRunReceipt, for run: AgentRun? = nil) throws -> Bool {
