@@ -120,6 +120,56 @@ import Foundation
   }
 }
 
+@Test func agentRejectsMissingRequiredToolArgumentsBeforeCallingTool() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(
+    name: "echo",
+    description: "Echoes text.",
+    inputs: [
+      "text": ToolInput(type: .string, description: "Text to echo.")
+    ]
+  ) { _ in
+    await counter.increment()
+    return "unexpected"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "echo")])
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  await #expect(throws: KarmaError.invalidToolArguments(tool: "echo", expected: ["text"])) {
+    _ = try await agent.run("Echo text")
+  }
+
+  let failedEvent = try #require(agent.memory.events.first { $0.kind == .toolCallFailed })
+  #expect(await counter.value == 0)
+  #expect(failedEvent.toolCall?.id == "call_1")
+  #expect(failedEvent.errorDescription == "invalidToolArguments(tool: \"echo\", expected: [\"text\"])")
+  #expect(agent.snapshotRun().metrics.toolFailureCount == 1)
+}
+
+@Test func agentRejectsUnexpectedToolArgumentsBeforeCallingTool() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(name: "current", description: "Returns current value.", inputs: [:]) { _ in
+    await counter.increment()
+    return "unexpected"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "current", arguments: ["extra": "value"])])
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  await #expect(throws: KarmaError.unexpectedToolArguments(tool: "current", unexpected: ["extra"])) {
+    _ = try await agent.run("Call current")
+  }
+
+  let failedEvent = try #require(agent.memory.events.first { $0.kind == .toolCallFailed })
+  #expect(await counter.value == 0)
+  #expect(failedEvent.toolCall?.id == "call_1")
+  #expect(failedEvent.errorDescription == "unexpectedToolArguments(tool: \"current\", unexpected: [\"extra\"])")
+  #expect(agent.snapshotRun().metrics.toolFailureCount == 1)
+}
+
 @Test func duplicateToolNamesCanBeRejectedBeforeRun() async throws {
   let firstTool = ClosureTool(name: "echo", description: "Echoes text.", inputs: [:]) { _ in "one" }
   let secondTool = ClosureTool(name: "echo", description: "Echoes text.", inputs: [:]) { _ in "two" }

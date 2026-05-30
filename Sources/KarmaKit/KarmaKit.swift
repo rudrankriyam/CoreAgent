@@ -5,6 +5,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case missingTool(String)
   case duplicateToolName(String)
   case invalidToolArguments(tool: String, expected: [String])
+  case unexpectedToolArguments(tool: String, unexpected: [String])
   case finalAnswerRejected(String)
   case timedOut(operation: String, seconds: Double)
   case retryLimitExceeded(attempts: Int, reason: String)
@@ -2195,6 +2196,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   ) async throws -> ToolExecutionOutput {
     do {
       try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
+      try validateToolArguments(prepared.call, tool: prepared.tool)
       let report = try await callTool(prepared.tool, arguments: prepared.call.arguments)
       try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
       let limitedOutput = limitToolOutput(report.output)
@@ -2257,6 +2259,23 @@ public final class ToolCallingAgent: @unchecked Sendable {
           toolManifest: prepared.manifest
         )
       )
+    }
+  }
+
+  private func validateToolArguments(_ call: ToolCall, tool: any Tool) throws {
+    let expectedArguments = Set(tool.inputs.keys)
+    let providedArguments = Set(call.arguments.keys)
+    let unexpectedArguments = providedArguments.subtracting(expectedArguments).sorted()
+    guard unexpectedArguments.isEmpty else {
+      throw KarmaError.unexpectedToolArguments(tool: call.name, unexpected: unexpectedArguments)
+    }
+
+    let missingRequiredArguments = tool.inputs
+      .filter { $0.value.isRequired && !providedArguments.contains($0.key) }
+      .map(\.key)
+      .sorted()
+    guard missingRequiredArguments.isEmpty else {
+      throw KarmaError.invalidToolArguments(tool: call.name, expected: missingRequiredArguments)
     }
   }
 
