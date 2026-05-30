@@ -1630,260 +1630,238 @@ import Foundation
 }
 
 @Test func noInputFoundationToolAdapterCanCallKarmaTool() async throws {
-  if #available(macOS 26.0, *) {
-    let tool = ClosureTool(
-      name: "current_time",
-      description: "Returns time.",
-      outputDescription: "An ISO 8601 timestamp.",
-      inputs: [:]
-    ) { _ in
-      "2026-05-30T13:00:00Z"
-    }
-    let adapter = try FoundationModelToolAdapter(tool: tool)
-    let output = try await adapter.call(arguments: GeneratedContent(properties: [:]))
-
-    #expect(adapter.name == "current_time")
-    #expect(adapter.description.contains("Returns: An ISO 8601 timestamp."))
-    #expect(output == "2026-05-30T13:00:00Z")
+  let tool = ClosureTool(
+    name: "current_time",
+    description: "Returns time.",
+    outputDescription: "An ISO 8601 timestamp.",
+    inputs: [:]
+  ) { _ in
+    "2026-05-30T13:00:00Z"
   }
+  let adapter = try FoundationModelToolAdapter(tool: tool)
+  let output = try await adapter.call(arguments: GeneratedContent(properties: [:]))
+
+  #expect(adapter.name == "current_time")
+  #expect(adapter.description.contains("Returns: An ISO 8601 timestamp."))
+  #expect(output == "2026-05-30T13:00:00Z")
 }
 
 @Test func foundationToolAdapterAuthorizesBeforeCallingKarmaTool() async throws {
-  if #available(macOS 26.0, *) {
-    let counter = CallCounter()
-    let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
-      await counter.increment()
-      return "found"
-    }
-    let adapter = try FoundationModelToolAdapter(
-      tool: tool,
-      toolExecutionPolicy: DenyToolExecutionPolicy(deniedToolName: "lookup"),
-      task: "Use lookup"
-    )
-
-    await #expect(throws: PolicyError.denied("lookup")) {
-      _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
-    }
-    #expect(await counter.value == 0)
+  let counter = CallCounter()
+  let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
+    await counter.increment()
+    return "found"
   }
+  let adapter = try FoundationModelToolAdapter(
+    tool: tool,
+    toolExecutionPolicy: DenyToolExecutionPolicy(deniedToolName: "lookup"),
+    task: "Use lookup"
+  )
+
+  await #expect(throws: PolicyError.denied("lookup")) {
+    _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
+  }
+  #expect(await counter.value == 0)
 }
 
 @Test func foundationToolAdapterRecordsAuthorizationEvents() async throws {
-  if #available(macOS 26.0, *) {
-    let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
-      "found"
-    }
-    let audit = FoundationModelToolAudit()
-    let adapter = try FoundationModelToolAdapter(tool: tool, task: "Use lookup", audit: audit)
-
-    _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
-    let events = await audit.events()
-
-    #expect(events.map(\.kind) == [.toolCallAuthorized])
-    #expect(events.first?.toolCall?.name == "lookup")
-    #expect(events.first?.toolManifest?.name == "lookup")
+  let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
+    "found"
   }
+  let audit = FoundationModelToolAudit()
+  let adapter = try FoundationModelToolAdapter(tool: tool, task: "Use lookup", audit: audit)
+
+  _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
+  let events = await audit.events()
+
+  #expect(events.map(\.kind) == [.toolCallAuthorized])
+  #expect(events.first?.toolCall?.name == "lookup")
+  #expect(events.first?.toolManifest?.name == "lookup")
 }
 
 @Test func foundationToolAdapterRecordsToolFailures() async throws {
-  if #available(macOS 26.0, *) {
-    let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
-      throw ToolFailureError.offline
-    }
-    let audit = FoundationModelToolAudit()
-    let adapter = try FoundationModelToolAdapter(tool: tool, task: "Use lookup", audit: audit)
-
-    await #expect(throws: ToolFailureError.offline) {
-      _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
-    }
-    let events = await audit.events()
-
-    #expect(events.map(\.kind) == [.toolCallAuthorized, .toolCallFailed])
-    #expect(events.last?.toolCall?.name == "lookup")
-    #expect(events.last?.errorDescription == "offline")
+  let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
+    throw ToolFailureError.offline
   }
+  let audit = FoundationModelToolAudit()
+  let adapter = try FoundationModelToolAdapter(tool: tool, task: "Use lookup", audit: audit)
+
+  await #expect(throws: ToolFailureError.offline) {
+    _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
+  }
+  let events = await audit.events()
+
+  #expect(events.map(\.kind) == [.toolCallAuthorized, .toolCallFailed])
+  #expect(events.last?.toolCall?.name == "lookup")
+  #expect(events.last?.errorDescription == "offline")
 }
 
 @Test func foundationToolAdapterConvertsTypedArgumentsToStrings() async throws {
-  if #available(macOS 26.0, *) {
-    let tool = ClosureTool(
-      name: "combine",
-      description: "Combines typed values.",
-      inputs: [
-        "name": ToolInput(type: .string, description: "Name."),
-        "count": ToolInput(type: .integer, description: "Count."),
-        "score": ToolInput(type: .number, description: "Score."),
-        "enabled": ToolInput(type: .boolean, description: "Enabled flag.")
-      ]
-    ) { arguments in
-      [
-        arguments["name", default: ""],
-        arguments["count", default: ""],
-        arguments["score", default: ""],
-        arguments["enabled", default: ""]
-      ].joined(separator: "|")
-    }
-
-    let adapter = try FoundationModelToolAdapter(tool: tool)
-    let output = try await adapter.call(
-      arguments: GeneratedContent(properties: [
-        "name": "Karma",
-        "count": 3,
-        "score": 2.5,
-        "enabled": true
-      ])
-    )
-
-    #expect(output == "Karma|3|2.5|true")
+  let tool = ClosureTool(
+    name: "combine",
+    description: "Combines typed values.",
+    inputs: [
+      "name": ToolInput(type: .string, description: "Name."),
+      "count": ToolInput(type: .integer, description: "Count."),
+      "score": ToolInput(type: .number, description: "Score."),
+      "enabled": ToolInput(type: .boolean, description: "Enabled flag.")
+    ]
+  ) { arguments in
+    [
+      arguments["name", default: ""],
+      arguments["count", default: ""],
+      arguments["score", default: ""],
+      arguments["enabled", default: ""]
+    ].joined(separator: "|")
   }
+
+  let adapter = try FoundationModelToolAdapter(tool: tool)
+  let output = try await adapter.call(
+    arguments: GeneratedContent(properties: [
+      "name": "Karma",
+      "count": 3,
+      "score": 2.5,
+      "enabled": true
+    ])
+  )
+
+  #expect(output == "Karma|3|2.5|true")
 }
 
 @Test func foundationToolAdapterRejectsUnsupportedInputTypes() async throws {
-  if #available(macOS 26.0, *) {
-    let tool = ClosureTool(
-      name: "search",
-      description: "Searches with complex filters.",
-      inputs: [
-        "filters": ToolInput(type: .any, description: "Search filters.")
-      ]
-    ) { _ in
-      "done"
-    }
-
-    #expect(throws: FoundationModelProviderError.unsupportedToolInputType("any")) {
-      _ = try FoundationModelToolAdapter(tool: tool)
-    }
+  let tool = ClosureTool(
+    name: "search",
+    description: "Searches with complex filters.",
+    inputs: [
+      "filters": ToolInput(type: .any, description: "Search filters.")
+    ]
+  ) { _ in
+    "done"
   }
-}
 
-@Test func foundationToolAdapterAcceptsNestedObjectAndArraySchemas() async throws {
-  if #available(macOS 26.0, *) {
-    let tool = ClosureTool(
-      name: "create_trip",
-      description: "Creates a trip plan.",
-      inputs: [
-        "traveler": .object(
-          description: "Traveler details.",
-          properties: [
-            "name": ToolInput(type: .string, description: "Traveler name."),
-            "age": ToolInput(type: .integer, description: "Traveler age.")
-          ]
-        ),
-        "cities": .array(
-          description: "Cities to visit.",
-          items: ToolInput(type: .string, description: "City name.")
-        )
-      ]
-    ) { arguments in
-      "\(arguments["traveler", default: ""])|\(arguments["cities", default: ""])"
-    }
-
+  #expect(throws: FoundationModelProviderError.unsupportedToolInputType("any")) {
     _ = try FoundationModelToolAdapter(tool: tool)
   }
 }
 
-@Test func foundationToolAdapterPassesComplexArgumentsAsJSONStrings() async throws {
-  if #available(macOS 26.0, *) {
-    let tool = ClosureTool(
-      name: "create_trip",
-      description: "Creates a trip plan.",
-      inputs: [
-        "traveler": .object(
-          description: "Traveler details.",
-          properties: [
-            "name": ToolInput(type: .string, description: "Traveler name."),
-            "age": ToolInput(type: .integer, description: "Traveler age.")
-          ]
-        ),
-        "cities": .array(
-          description: "Cities to visit.",
-          items: ToolInput(type: .string, description: "City name.")
-        )
-      ]
-    ) { arguments in
-      "\(arguments["traveler", default: ""])|\(arguments["cities", default: ""])"
-    }
-
-    let adapter = try FoundationModelToolAdapter(tool: tool)
-    let output = try await adapter.call(
-      arguments: GeneratedContent(properties: [
-        "traveler": GeneratedContent(properties: [
-          "name": "Rudrank",
-          "age": 26
-        ]),
-        "cities": GeneratedContent(elements: [
-          "Tokyo",
-          "Kyoto"
-        ])
-      ])
-    )
-
-    #expect(output.contains(#""name": "Rudrank""#))
-    #expect(output.contains(#""age": 26"#))
-    #expect(output.contains(#"["Tokyo", "Kyoto"]"#))
+@Test func foundationToolAdapterAcceptsNestedObjectAndArraySchemas() async throws {
+  let tool = ClosureTool(
+    name: "create_trip",
+    description: "Creates a trip plan.",
+    inputs: [
+      "traveler": .object(
+        description: "Traveler details.",
+        properties: [
+          "name": ToolInput(type: .string, description: "Traveler name."),
+          "age": ToolInput(type: .integer, description: "Traveler age.")
+        ]
+      ),
+      "cities": .array(
+        description: "Cities to visit.",
+        items: ToolInput(type: .string, description: "City name.")
+      )
+    ]
+  ) { arguments in
+    "\(arguments["traveler", default: ""])|\(arguments["cities", default: ""])"
   }
+
+  _ = try FoundationModelToolAdapter(tool: tool)
+}
+
+@Test func foundationToolAdapterPassesComplexArgumentsAsJSONStrings() async throws {
+  let tool = ClosureTool(
+    name: "create_trip",
+    description: "Creates a trip plan.",
+    inputs: [
+      "traveler": .object(
+        description: "Traveler details.",
+        properties: [
+          "name": ToolInput(type: .string, description: "Traveler name."),
+          "age": ToolInput(type: .integer, description: "Traveler age.")
+        ]
+      ),
+      "cities": .array(
+        description: "Cities to visit.",
+        items: ToolInput(type: .string, description: "City name.")
+      )
+    ]
+  ) { arguments in
+    "\(arguments["traveler", default: ""])|\(arguments["cities", default: ""])"
+  }
+
+  let adapter = try FoundationModelToolAdapter(tool: tool)
+  let output = try await adapter.call(
+    arguments: GeneratedContent(properties: [
+      "traveler": GeneratedContent(properties: [
+        "name": "Rudrank",
+        "age": 26
+      ]),
+      "cities": GeneratedContent(elements: [
+        "Tokyo",
+        "Kyoto"
+      ])
+    ])
+  )
+
+  #expect(output.contains(#""name": "Rudrank""#))
+  #expect(output.contains(#""age": 26"#))
+  #expect(output.contains(#"["Tokyo", "Kyoto"]"#))
 }
 
 @Test func foundationTranscriptEventsIncludeToolManifests() async throws {
-  if #available(macOS 26.0, *) {
-    let tool = ClosureTool(
-      name: "lookup",
-      description: "Looks up public data.",
-      inputs: [
-        "query": ToolInput(type: .string, description: "Search query.")
-      ]
-    ) { _ in
-      "found"
-    }
-    let manifest = try ToolManifest(tool: tool)
-    let transcript = Transcript(entries: [
-      .toolCalls(
-        Transcript.ToolCalls([
-          Transcript.ToolCall(
-            id: "call_1",
-            toolName: "lookup",
-            arguments: GeneratedContent(properties: ["query": "karma"])
-          )
-        ])
-      ),
-      .toolOutput(
-        Transcript.ToolOutput(
+  let tool = ClosureTool(
+    name: "lookup",
+    description: "Looks up public data.",
+    inputs: [
+      "query": ToolInput(type: .string, description: "Search query.")
+    ]
+  ) { _ in
+    "found"
+  }
+  let manifest = try ToolManifest(tool: tool)
+  let transcript = Transcript(entries: [
+    .toolCalls(
+      Transcript.ToolCalls([
+        Transcript.ToolCall(
           id: "call_1",
           toolName: "lookup",
-          segments: [.text(Transcript.TextSegment(content: "found"))]
+          arguments: GeneratedContent(properties: ["query": "karma"])
         )
+      ])
+    ),
+    .toolOutput(
+      Transcript.ToolOutput(
+        id: "call_1",
+        toolName: "lookup",
+        segments: [.text(Transcript.TextSegment(content: "found"))]
       )
-    ])
+    )
+  ])
 
-    let events = try FoundationModelTranscriptEvents.makeEvents(from: transcript, tools: [tool])
+  let events = try FoundationModelTranscriptEvents.makeEvents(from: transcript, tools: [tool])
 
-    #expect(events.count == 2)
-    #expect(events[0].toolCall == ToolCall(id: "call_1", name: "lookup"))
-    #expect(events[0].toolManifest == manifest)
-    #expect(events[1].toolResult == ToolResult(callID: "call_1", output: "found"))
-    #expect(events[1].toolManifest == manifest)
-  }
+  #expect(events.count == 2)
+  #expect(events[0].toolCall == ToolCall(id: "call_1", name: "lookup"))
+  #expect(events[0].toolManifest == manifest)
+  #expect(events[1].toolResult == ToolResult(callID: "call_1", output: "found"))
+  #expect(events[1].toolManifest == manifest)
 }
 
 @Test func foundationSchemaAdapterRejectsObjectWithoutProperties() async throws {
-  if #available(macOS 26.0, *) {
-    #expect(throws: FoundationModelProviderError.invalidToolInputSchema("Object 'Payload' must define properties.")) {
-      _ = try FoundationModelSchemaAdapter.dynamicSchema(
-        for: ToolInput(type: .object, description: "Payload."),
-        nameHint: "Payload"
-      )
-    }
+  #expect(throws: FoundationModelProviderError.invalidToolInputSchema("Object 'Payload' must define properties.")) {
+    _ = try FoundationModelSchemaAdapter.dynamicSchema(
+      for: ToolInput(type: .object, description: "Payload."),
+      nameHint: "Payload"
+    )
   }
 }
 
 @Test func foundationSchemaAdapterRejectsArrayWithoutItems() async throws {
-  if #available(macOS 26.0, *) {
-    #expect(throws: FoundationModelProviderError.invalidToolInputSchema("Array 'Items' must define an item schema.")) {
-      _ = try FoundationModelSchemaAdapter.dynamicSchema(
-        for: ToolInput(type: .array, description: "Items."),
-        nameHint: "Items"
-      )
-    }
+  #expect(throws: FoundationModelProviderError.invalidToolInputSchema("Array 'Items' must define an item schema.")) {
+    _ = try FoundationModelSchemaAdapter.dynamicSchema(
+      for: ToolInput(type: .array, description: "Items."),
+      nameHint: "Items"
+    )
   }
 }
 

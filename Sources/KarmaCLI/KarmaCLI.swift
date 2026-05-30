@@ -101,88 +101,83 @@ struct KarmaCLI {
         return
       }
 
-      if #available(macOS 26.0, *) {
-        let provider = FoundationModelProvider(
-          instructions: "Answer clearly and concisely. You are running inside KarmaKit."
+      let provider = FoundationModelProvider(
+        instructions: "Answer clearly and concisely. You are running inside KarmaKit."
+      )
+      if enablesStructuredDemo {
+        let output = try await provider.generateStructuredContent(
+          prompt: prompt,
+          schemaName: "KarmaStructuredDemo",
+          schemaDescription: "A concise structured response.",
+          properties: [
+            "title": ToolInput(type: .string, description: "A short title."),
+            "summary": ToolInput(type: .string, description: "One sentence summary."),
+            "tags": .array(
+              description: "Two to four lowercase tags.",
+              items: ToolInput(type: .string, description: "A tag.")
+            )
+          ]
         )
-        if enablesStructuredDemo {
-          let output = try await provider.generateStructuredContent(
-            prompt: prompt,
-            schemaName: "KarmaStructuredDemo",
-            schemaDescription: "A concise structured response.",
-            properties: [
-              "title": ToolInput(type: .string, description: "A short title."),
-              "summary": ToolInput(type: .string, description: "One sentence summary."),
-              "tags": .array(
-                description: "Two to four lowercase tags.",
-                items: ToolInput(type: .string, description: "A tag.")
-              )
-            ]
-          )
-          print(output)
-          return
-        }
+        print(output)
+        return
+      }
 
-        let agent = try ToolCallingAgent(
-          tools: tools,
-          model: provider,
-          toolExecutionPolicy: deniedToolNames.isEmpty
-            ? AllowAllToolExecutionPolicy()
-            : DenyNamedToolsPolicy(deniedToolNames: deniedToolNames),
-          retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
-          timeouts: timeouts,
-          limits: AgentLimits(
-            maximumModelInputCharacters: maximumModelInputCharacters,
-            maximumToolOutputCharacters: maximumToolOutputCharacters,
-            maximumContextMessages: maximumContextMessages,
-            maximumMemoryMessages: maximumMemoryMessages
-          ),
-          toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
-          toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
-          finalAnswerRecoveryMode: failsOnFinalAnswerRejection ? .fail : .recover,
-          completionMode: completionMode,
-          validatesToolNames: true
-        )
-        let startedAt = Date()
-        let run: AgentRun
-        do {
-          if enablesStreaming {
-            run = try await agent.runStreaming(prompt) { partial in
-              print("\r\(partial)", terminator: "")
-              fflush(stdout)
-            }
-            print("")
-          } else {
-            run = try await agent.run(prompt)
-            print(run.finalAnswer)
+      let agent = try ToolCallingAgent(
+        tools: tools,
+        model: provider,
+        toolExecutionPolicy: deniedToolNames.isEmpty
+          ? AllowAllToolExecutionPolicy()
+          : DenyNamedToolsPolicy(deniedToolNames: deniedToolNames),
+        retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
+        timeouts: timeouts,
+        limits: AgentLimits(
+          maximumModelInputCharacters: maximumModelInputCharacters,
+          maximumToolOutputCharacters: maximumToolOutputCharacters,
+          maximumContextMessages: maximumContextMessages,
+          maximumMemoryMessages: maximumMemoryMessages
+        ),
+        toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
+        toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
+        finalAnswerRecoveryMode: failsOnFinalAnswerRejection ? .fail : .recover,
+        completionMode: completionMode,
+        validatesToolNames: true
+      )
+      let startedAt = Date()
+      let run: AgentRun
+      do {
+        if enablesStreaming {
+          run = try await agent.runStreaming(prompt) { partial in
+            print("\r\(partial)", terminator: "")
+            fflush(stdout)
           }
-        } catch {
-          let failedRun = agent.snapshotRun(startedAt: startedAt)
-          try writeArtifacts(
-            run: failedRun,
-            tracePath: tracePath,
-            receiptPath: receiptPath,
-            redactionPolicy: redactionPolicy
-          )
-          if enablesVerboseOutput {
-            fputs("\n\(failedRun.events.karmaDebugDescription)\n", stderr)
-          }
-          throw error
+          print("")
+        } else {
+          run = try await agent.run(prompt)
+          print(run.finalAnswer)
         }
-
-        if enablesVerboseOutput {
-          fputs("\n\(run.events.karmaDebugDescription)\n", stderr)
-        }
+      } catch {
+        let failedRun = agent.snapshotRun(startedAt: startedAt)
         try writeArtifacts(
-          run: run,
+          run: failedRun,
           tracePath: tracePath,
           receiptPath: receiptPath,
           redactionPolicy: redactionPolicy
         )
-      } else {
-        fputs("Karma requires macOS 26 or newer for Foundation Models.\n", stderr)
-        Foundation.exit(1)
+        if enablesVerboseOutput {
+          fputs("\n\(failedRun.events.karmaDebugDescription)\n", stderr)
+        }
+        throw error
       }
+
+      if enablesVerboseOutput {
+        fputs("\n\(run.events.karmaDebugDescription)\n", stderr)
+      }
+      try writeArtifacts(
+        run: run,
+        tracePath: tracePath,
+        receiptPath: receiptPath,
+        redactionPolicy: redactionPolicy
+      )
     } catch {
       fputs("\(error)\n", stderr)
       Foundation.exit(1)
