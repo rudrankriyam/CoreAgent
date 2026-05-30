@@ -20,6 +20,7 @@ struct KarmaCLI {
       let enablesVerboseOutput = arguments.removeAll("--verbose")
       let enablesStreaming = arguments.removeAll("--stream")
       let enablesStructuredDemo = arguments.removeAll("--structured-demo")
+      let enablesParallelTools = arguments.removeAll("--parallel-tools")
       let disablesRedaction = arguments.removeAll("--no-redaction")
       let tracePath = arguments.removeOptionValue("--trace")
       let receiptPath = arguments.removeOptionValue("--receipt")
@@ -39,7 +40,8 @@ struct KarmaCLI {
         try printAgentConfiguration(
           tools: tools,
           maximumModelInputCharacters: maximumModelInputCharacters,
-          maximumToolOutputCharacters: maximumToolOutputCharacters
+          maximumToolOutputCharacters: maximumToolOutputCharacters,
+          toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential
         )
         return
       }
@@ -74,6 +76,7 @@ struct KarmaCLI {
             maximumModelInputCharacters: maximumModelInputCharacters,
             maximumToolOutputCharacters: maximumToolOutputCharacters
           ),
+          toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           validatesToolNames: true
         )
         let run: AgentRun
@@ -116,6 +119,7 @@ struct KarmaCLI {
     print("       karma --demo-tools --print-config")
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
+    print("       karma --parallel-tools --demo-tools <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
     print("       karma --receipt /tmp/karma-receipt.json <prompt>")
     print("       karma --no-redaction --trace /tmp/karma-trace.json <prompt>")
@@ -137,7 +141,8 @@ struct KarmaCLI {
   private static func printAgentConfiguration(
     tools: [any Tool],
     maximumModelInputCharacters: Int?,
-    maximumToolOutputCharacters: Int?
+    maximumToolOutputCharacters: Int?,
+    toolCallExecutionMode: ToolCallExecutionMode
   ) throws {
     let configuration = AgentConfiguration(
       systemPrompt: "You are a helpful Swift agent. Use tools when useful, then return a final answer.",
@@ -149,6 +154,7 @@ struct KarmaCLI {
         maximumModelInputCharacters: maximumModelInputCharacters,
         maximumToolOutputCharacters: maximumToolOutputCharacters
       ),
+      toolCallExecutionMode: toolCallExecutionMode,
       toolManifests: try tools.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
     let encoder = JSONEncoder()

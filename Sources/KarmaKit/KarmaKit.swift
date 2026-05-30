@@ -574,6 +574,11 @@ public struct AgentLimits: Codable, Equatable, Sendable {
   public static let none = AgentLimits()
 }
 
+public enum ToolCallExecutionMode: String, Codable, Equatable, Sendable {
+  case sequential
+  case parallel
+}
+
 private extension Duration {
   var secondsValue: Double {
     let components = components
@@ -589,7 +594,20 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
   public var retryPolicy: RetryPolicy
   public var timeouts: AgentTimeouts
   public var limits: AgentLimits
+  public var toolCallExecutionMode: ToolCallExecutionMode
   public var toolManifests: [ToolManifest]
+
+  private enum CodingKeys: String, CodingKey {
+    case version
+    case systemPrompt
+    case maxSteps
+    case resetsMemoryBeforeRun
+    case retryPolicy
+    case timeouts
+    case limits
+    case toolCallExecutionMode
+    case toolManifests
+  }
 
   public init(
     version: Int = 1,
@@ -599,6 +617,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     retryPolicy: RetryPolicy,
     timeouts: AgentTimeouts,
     limits: AgentLimits,
+    toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     toolManifests: [ToolManifest]
   ) {
     self.version = version
@@ -608,7 +627,24 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     self.retryPolicy = retryPolicy
     self.timeouts = timeouts
     self.limits = limits
+    self.toolCallExecutionMode = toolCallExecutionMode
     self.toolManifests = toolManifests
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      version: try container.decode(Int.self, forKey: .version),
+      systemPrompt: try container.decode(String.self, forKey: .systemPrompt),
+      maxSteps: try container.decode(Int.self, forKey: .maxSteps),
+      resetsMemoryBeforeRun: try container.decode(Bool.self, forKey: .resetsMemoryBeforeRun),
+      retryPolicy: try container.decode(RetryPolicy.self, forKey: .retryPolicy),
+      timeouts: try container.decode(AgentTimeouts.self, forKey: .timeouts),
+      limits: try container.decode(AgentLimits.self, forKey: .limits),
+      toolCallExecutionMode: try container.decodeIfPresent(ToolCallExecutionMode.self, forKey: .toolCallExecutionMode)
+        ?? .sequential,
+      toolManifests: try container.decode([ToolManifest].self, forKey: .toolManifests)
+    )
   }
 
   public func verifyTools(_ tools: [any Tool]) throws {
@@ -960,6 +996,20 @@ public struct AgentRunEnvelope: Codable, Equatable, Sendable {
   }
 }
 
+private struct PreparedToolCall: Sendable {
+  var index: Int
+  var call: ToolCall
+  var tool: any Tool
+  var manifest: ToolManifest
+  var stepNumber: Int
+}
+
+private struct ToolExecutionOutput: Sendable {
+  var index: Int
+  var result: ToolResult
+  var events: [AgentEvent]
+}
+
 public struct AgentEventReceipt: Codable, Equatable, Sendable {
   public var index: Int
   public var previousHash: String?
@@ -1198,6 +1248,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let retryPolicy: RetryPolicy
   public let timeouts: AgentTimeouts
   public let limits: AgentLimits
+  public let toolCallExecutionMode: ToolCallExecutionMode
   public let memoryStore: (any AgentMemoryStore)?
   public private(set) var memory: AgentMemory
   private let systemPrompt: String
@@ -1214,6 +1265,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
     limits: AgentLimits = .none,
+    toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     memoryStore: (any AgentMemoryStore)? = nil
   ) {
     self.model = model
@@ -1229,6 +1281,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.retryPolicy = retryPolicy
     self.timeouts = timeouts
     self.limits = limits
+    self.toolCallExecutionMode = toolCallExecutionMode
     self.memoryStore = memoryStore
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
@@ -1255,6 +1308,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       retryPolicy: configuration.retryPolicy,
       timeouts: configuration.timeouts,
       limits: configuration.limits,
+      toolCallExecutionMode: configuration.toolCallExecutionMode,
       memoryStore: memoryStore
     )
   }
@@ -1271,6 +1325,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
     limits: AgentLimits = .none,
+    toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     memoryStore: (any AgentMemoryStore)? = nil,
     validatesToolNames: Bool
   ) throws {
@@ -1295,6 +1350,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       retryPolicy: retryPolicy,
       timeouts: timeouts,
       limits: limits,
+      toolCallExecutionMode: toolCallExecutionMode,
       memoryStore: memoryStore
     )
   }
@@ -1307,6 +1363,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       retryPolicy: retryPolicy,
       timeouts: timeouts,
       limits: limits,
+      toolCallExecutionMode: toolCallExecutionMode,
       toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
   }
@@ -1390,44 +1447,11 @@ public final class ToolCallingAgent: @unchecked Sendable {
           )
 
         case .toolCalls(let calls):
-          let results = try await calls.asyncMap { call in
-            try await self.checkInterruption(cancellation, stepNumber: stepNumber)
-            guard let tool = tools[call.name] else {
-              throw KarmaError.missingTool(call.name)
-            }
-
-            let manifest = try ToolManifest(tool: tool)
-            try await toolExecutionPolicy.authorize(
-              .init(call: call, stepNumber: stepNumber, task: task, toolManifest: manifest)
-            )
-            await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call, toolManifest: manifest))
-            try await self.checkInterruption(cancellation, stepNumber: stepNumber)
-            let rawOutput = try await callTool(tool, arguments: call.arguments)
-            try await self.checkInterruption(cancellation, stepNumber: stepNumber)
-            let limitedOutput = limitToolOutput(rawOutput)
-            let result = ToolResult(callID: call.id, output: limitedOutput.output)
-            if let message = limitedOutput.message {
-              await emit(
-                .init(
-                  kind: .toolOutputLimited,
-                  stepNumber: stepNumber,
-                  message: message,
-                  toolCall: call,
-                  toolResult: result,
-                  toolManifest: manifest
-                )
-              )
-            }
-            await emit(
-              .init(
-                kind: .toolCallFinished,
-                stepNumber: stepNumber,
-                toolCall: call,
-                toolResult: result,
-                toolManifest: manifest
-              )
-            )
-            return result
+          let results = switch toolCallExecutionMode {
+          case .sequential:
+            try await executeToolCallsSequentially(calls, stepNumber: stepNumber, task: task, cancellation: cancellation)
+          case .parallel:
+            try await executeToolCallsInParallel(calls, stepNumber: stepNumber, task: task, cancellation: cancellation)
           }
 
           for result in results {
@@ -1448,6 +1472,140 @@ public final class ToolCallingAgent: @unchecked Sendable {
       await emit(.init(kind: .runFailed, message: String(describing: error)))
       throw error
     }
+  }
+
+  private func executeToolCallsSequentially(
+    _ calls: [ToolCall],
+    stepNumber: Int,
+    task: String,
+    cancellation: AgentCancellation?
+  ) async throws -> [ToolResult] {
+    var results: [ToolResult] = []
+    for (index, call) in calls.enumerated() {
+      let prepared = try await prepareToolCall(
+        call,
+        index: index,
+        stepNumber: stepNumber,
+        task: task,
+        cancellation: cancellation,
+        emitsStartEvent: true
+      )
+      let output = try await executePreparedToolCall(prepared, cancellation: cancellation, emitsInterruption: true)
+      for event in output.events {
+        await emit(event)
+      }
+      results.append(output.result)
+    }
+    return results
+  }
+
+  private func executeToolCallsInParallel(
+    _ calls: [ToolCall],
+    stepNumber: Int,
+    task: String,
+    cancellation: AgentCancellation?
+  ) async throws -> [ToolResult] {
+    let preparedCalls = try await calls.enumerated().asyncMap { index, call in
+      try await prepareToolCall(
+        call,
+        index: index,
+        stepNumber: stepNumber,
+        task: task,
+        cancellation: cancellation,
+        emitsStartEvent: false
+      )
+    }
+
+    for prepared in preparedCalls {
+      await emit(
+        .init(
+          kind: .toolCallStarted,
+          stepNumber: stepNumber,
+          toolCall: prepared.call,
+          toolManifest: prepared.manifest
+        )
+      )
+    }
+
+    let outputs = try await withThrowingTaskGroup(of: ToolExecutionOutput.self) { group in
+      for prepared in preparedCalls {
+        group.addTask {
+          try await self.executePreparedToolCall(prepared, cancellation: cancellation, emitsInterruption: false)
+        }
+      }
+
+      var outputs: [ToolExecutionOutput] = []
+      for try await output in group {
+        outputs.append(output)
+      }
+      return outputs.sorted { $0.index < $1.index }
+    }
+
+    for output in outputs {
+      for event in output.events {
+        await emit(event)
+      }
+    }
+    return outputs.map(\.result)
+  }
+
+  private func prepareToolCall(
+    _ call: ToolCall,
+    index: Int,
+    stepNumber: Int,
+    task: String,
+    cancellation: AgentCancellation?,
+    emitsStartEvent: Bool
+  ) async throws -> PreparedToolCall {
+    try await checkInterruption(cancellation, stepNumber: stepNumber)
+    guard let tool = tools[call.name] else {
+      throw KarmaError.missingTool(call.name)
+    }
+
+    let manifest = try ToolManifest(tool: tool)
+    try await toolExecutionPolicy.authorize(
+      .init(call: call, stepNumber: stepNumber, task: task, toolManifest: manifest)
+    )
+    if emitsStartEvent {
+      await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call, toolManifest: manifest))
+    }
+    try await checkInterruption(cancellation, stepNumber: stepNumber)
+    return PreparedToolCall(index: index, call: call, tool: tool, manifest: manifest, stepNumber: stepNumber)
+  }
+
+  private func executePreparedToolCall(
+    _ prepared: PreparedToolCall,
+    cancellation: AgentCancellation?,
+    emitsInterruption: Bool
+  ) async throws -> ToolExecutionOutput {
+    try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
+    let rawOutput = try await callTool(prepared.tool, arguments: prepared.call.arguments)
+    try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
+    let limitedOutput = limitToolOutput(rawOutput)
+    let result = ToolResult(callID: prepared.call.id, output: limitedOutput.output)
+    var events: [AgentEvent] = []
+    if let message = limitedOutput.message {
+      events.append(
+        .init(
+          kind: .toolOutputLimited,
+          stepNumber: prepared.stepNumber,
+          message: message,
+          toolCall: prepared.call,
+          toolResult: result,
+          toolManifest: prepared.manifest
+        )
+      )
+    }
+    events.append(
+      .init(
+        kind: .toolCallFinished,
+        stepNumber: prepared.stepNumber,
+        toolCall: prepared.call,
+        toolResult: result,
+        toolManifest: prepared.manifest
+      )
+    )
+    return ToolExecutionOutput(index: prepared.index, result: result, events: events)
   }
 
   private func generateModelOutput(
@@ -1501,6 +1659,22 @@ public final class ToolCallingAgent: @unchecked Sendable {
       await emit(.init(kind: .runInterrupted, stepNumber: stepNumber, message: reason))
     } else {
       await emit(.init(kind: .runInterrupted, message: reason))
+    }
+    throw KarmaError.interrupted(reason: reason)
+  }
+
+  private func checkToolInterruption(
+    _ cancellation: AgentCancellation?,
+    stepNumber: Int,
+    emitsEvent: Bool
+  ) async throws {
+    if emitsEvent {
+      try await checkInterruption(cancellation, stepNumber: stepNumber)
+      return
+    }
+
+    guard let reason = await cancellation?.interruptionReason else {
+      return
     }
     throw KarmaError.interrupted(reason: reason)
   }

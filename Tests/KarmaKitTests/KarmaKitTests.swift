@@ -31,6 +31,75 @@ import Foundation
   #expect(run.steps.last?.isFinalAnswer == true)
 }
 
+@Test func parallelToolCallsRunConcurrentlyAndKeepResultOrder() async throws {
+  let probe = ParallelProbe()
+  let firstTool = ClosureTool(name: "first", description: "Returns first.", inputs: [:]) { _ in
+    await probe.started()
+    try await Task.sleep(for: .milliseconds(80))
+    await probe.finished()
+    return "one"
+  }
+  let secondTool = ClosureTool(name: "second", description: "Returns second.", inputs: [:]) { _ in
+    await probe.started()
+    try await Task.sleep(for: .milliseconds(80))
+    await probe.finished()
+    return "two"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "call_1", name: "first"),
+      ToolCall(id: "call_2", name: "second")
+    ]),
+    .finalAnswer("done")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [firstTool, secondTool],
+    model: model,
+    toolCallExecutionMode: .parallel
+  )
+
+  let run = try await agent.run("Run both tools")
+
+  #expect(await probe.maximumRunning == 2)
+  #expect(run.steps.first?.toolResults.map(\.callID) == ["call_1", "call_2"])
+  #expect(run.steps.first?.toolResults.map(\.output) == ["one", "two"])
+  #expect(run.events.map(\.kind).prefix(4) == [
+    .runStarted,
+    .modelOutput,
+    .toolCallStarted,
+    .toolCallStarted
+  ])
+}
+
+@Test func parallelToolCallsPreflightPolicyBeforeExecution() async throws {
+  let counter = CallCounter()
+  let executedTool = ClosureTool(name: "allowed", description: "Allowed tool.", inputs: [:]) { _ in
+    await counter.increment()
+    return "allowed"
+  }
+  let deniedTool = ClosureTool(name: "denied", description: "Denied tool.", inputs: [:]) { _ in
+    "denied"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "call_1", name: "allowed"),
+      ToolCall(id: "call_2", name: "denied")
+    ])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [executedTool, deniedTool],
+    model: model,
+    toolExecutionPolicy: DenyToolExecutionPolicy(deniedToolName: "denied"),
+    toolCallExecutionMode: .parallel
+  )
+
+  await #expect(throws: PolicyError.denied("denied")) {
+    _ = try await agent.run("Run both tools")
+  }
+  #expect(await counter.value == 0)
+  #expect(agent.memory.events.map(\.kind) == [.runStarted, .modelOutput, .runFailed])
+}
+
 @Test func closureToolValidatesRequiredArguments() async throws {
   let tool = ClosureTool(
     name: "echo",
@@ -196,7 +265,8 @@ import Foundation
     resetsMemoryBeforeRun: false,
     retryPolicy: RetryPolicy(maximumRetries: 2, delay: .milliseconds(5)),
     timeouts: AgentTimeouts(toolCall: .seconds(2)),
-    limits: AgentLimits(maximumModelInputCharacters: 1000, maximumToolOutputCharacters: 100)
+    limits: AgentLimits(maximumModelInputCharacters: 1000, maximumToolOutputCharacters: 100),
+    toolCallExecutionMode: .parallel
   )
   let configuration = try sourceAgent.configuration()
   let data = try JSONEncoder().encode(configuration)
@@ -217,6 +287,29 @@ import Foundation
   #expect(rebuiltAgent.maxSteps == 3)
   #expect(rebuiltAgent.resetsMemoryBeforeRun == false)
   #expect(rebuiltAgent.limits.maximumToolOutputCharacters == 100)
+  #expect(rebuiltAgent.toolCallExecutionMode == .parallel)
+}
+
+@Test func agentConfigurationDefaultsMissingToolExecutionMode() throws {
+  let json = """
+    {
+      "version": 1,
+      "systemPrompt": "System",
+      "maxSteps": 3,
+      "resetsMemoryBeforeRun": true,
+      "retryPolicy": {
+        "maximumRetries": 0,
+        "delaySeconds": 0
+      },
+      "timeouts": {},
+      "limits": {},
+      "toolManifests": []
+    }
+    """
+
+  let configuration = try JSONDecoder().decode(AgentConfiguration.self, from: Data(json.utf8))
+
+  #expect(configuration.toolCallExecutionMode == .sequential)
 }
 
 @Test func agentConfigurationRejectsRuntimeToolDrift() throws {
@@ -1187,6 +1280,28 @@ import Foundation
 
 private enum PolicyError: Error, Equatable {
   case denied(String)
+}
+
+private actor ParallelProbe {
+  private var running = 0
+  private(set) var maximumRunning = 0
+
+  func started() {
+    running += 1
+    maximumRunning = Swift.max(maximumRunning, running)
+  }
+
+  func finished() {
+    running -= 1
+  }
+}
+
+private actor CallCounter {
+  private(set) var value = 0
+
+  func increment() {
+    value += 1
+  }
 }
 
 private struct DenyToolExecutionPolicy: ToolExecutionPolicy {

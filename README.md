@@ -41,6 +41,7 @@ swift run karma --demo-tools --list-tools
 swift run karma --demo-tools --print-config
 swift run karma --verbose --demo-tools "What time is it? Use the available action."
 swift run karma --stream "Write one sentence about local agents."
+swift run karma --parallel-tools --demo-tools "Use the available actions when helpful."
 swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
 swift run karma --receipt /tmp/karma-receipt.json "Explain tool calling in one sentence."
 swift run karma --no-redaction --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
@@ -59,6 +60,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ModelProvider`: abstraction for local, hosted, or Apple-provided models.
 - `ToolCallingAgent`: minimal loop that asks a model for tool calls or a final answer.
 - `AgentConfiguration`: persists safe runtime settings and approved tool manifests.
+- `ToolCallExecutionMode`: runs multiple tool calls sequentially or in parallel.
 - `AgentCancellation`: interrupts runs with an inspectable reason.
 - `ToolManifest`: stable digest for approving and auditing tool definitions.
 - `AgentMemory`: stores messages and action steps.
