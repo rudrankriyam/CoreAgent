@@ -606,6 +606,10 @@ public protocol ToolExecutionPolicyConfigurableModelProvider: ModelProvider {
   func withToolExecutionPolicy(_ policy: any ToolExecutionPolicy) -> any ModelProvider
 }
 
+public protocol AgentEventProvidingError: Error, Sendable {
+  var agentEvents: [AgentEvent] { get }
+}
+
 public struct RetryPolicy: Equatable, Sendable {
   public var maximumRetries: Int
   public var delay: Duration
@@ -2130,6 +2134,11 @@ public final class ToolCallingAgent: @unchecked Sendable {
         )
       } catch {
         lastError = error
+        if let eventProvidingError = error as? any AgentEventProvidingError {
+          for event in eventProvidingError.agentEvents {
+            await emit(event)
+          }
+        }
         guard attempt < retryPolicy.maximumRetries else {
           throw KarmaError.retryLimitExceeded(attempts: attempt + 1, reason: String(describing: error))
         }

@@ -1342,6 +1342,32 @@ import Foundation
   #expect(agent.snapshotRun().metrics.isFailed)
 }
 
+@Test func modelProviderSuppliedEventsAreRecordedBeforeFailure() async throws {
+  let call = ToolCall(id: "call_policy", name: "lookup")
+  let event = AgentEvent(
+    kind: .toolCallDenied,
+    message: "Denied by policy.",
+    errorType: "PolicyError",
+    errorDescription: "Denied by policy.",
+    toolCall: call
+  )
+  let model = EventFailingModel(events: [event])
+  let agent = ToolCallingAgent(tools: [], model: model)
+
+  do {
+    _ = try await agent.run("Use lookup")
+    Issue.record("Expected provider event failure")
+  } catch KarmaError.retryLimitExceeded(let attempts, let reason) {
+    #expect(attempts == 1)
+    #expect(reason.contains("Provider event failure"))
+  }
+
+  let deniedEvent = agent.memory.events.first { $0.kind == .toolCallDenied }
+  #expect(deniedEvent?.toolCall?.id == "call_policy")
+  #expect(agent.memory.events.last?.kind == .runFailed)
+  #expect(agent.snapshotRun().metrics.toolDenialCount == 1)
+}
+
 @Test func streamingModelGenerationCanTimeOut() async throws {
   let model = SlowStreamingModel(delay: .milliseconds(100), output: .finalAnswer("late"))
   let agent = ToolCallingAgent(
@@ -2009,6 +2035,22 @@ private enum ToolFailureError: Error, CustomStringConvertible {
     case .offline:
       "offline"
     }
+  }
+}
+
+private struct ProviderEventFailure: AgentEventProvidingError, CustomStringConvertible {
+  var agentEvents: [AgentEvent]
+
+  var description: String {
+    "Provider event failure"
+  }
+}
+
+private struct EventFailingModel: ModelProvider {
+  var events: [AgentEvent]
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    throw ProviderEventFailure(agentEvents: events)
   }
 }
 

@@ -25,6 +25,20 @@ public enum FoundationModelProviderError: Error, CustomStringConvertible, Equata
   }
 }
 
+public struct FoundationModelToolExecutionError: AgentEventProvidingError, CustomStringConvertible {
+  public var underlyingDescription: String
+  public var agentEvents: [AgentEvent]
+
+  public init(underlyingDescription: String, agentEvents: [AgentEvent]) {
+    self.underlyingDescription = underlyingDescription
+    self.agentEvents = agentEvents
+  }
+
+  public var description: String {
+    "Foundation Models tool execution failed: \(underlyingDescription)"
+  }
+}
+
 @available(iOS 26.0, macOS 26.0, *)
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
@@ -67,7 +81,13 @@ public struct FoundationModelProvider: StreamingModelProvider {
 
     let inputTokens = try await tokenCount(for: prompt)
     let toolDefinitionTokens = try await tokenCount(for: foundationTools)
-    let response = try await session.respond(to: prompt, options: options)
+    let response: LanguageModelSession.Response<String>
+    do {
+      response = try await session.respond(to: prompt, options: options)
+    } catch {
+      try await throwToolExecutionErrorIfNeeded(error, audit: audit, session: session, tools: tools)
+      throw error
+    }
     return .finalAnswer(
       response.content,
       events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
@@ -106,9 +126,14 @@ public struct FoundationModelProvider: StreamingModelProvider {
     let toolDefinitionTokens = try await tokenCount(for: foundationTools)
     var finalContent = ""
 
-    for try await partialResponse in session.streamResponse(to: prompt, options: options) {
-      finalContent = partialResponse.content
-      await onPartialResponse(partialResponse.content)
+    do {
+      for try await partialResponse in session.streamResponse(to: prompt, options: options) {
+        finalContent = partialResponse.content
+        await onPartialResponse(partialResponse.content)
+      }
+    } catch {
+      try await throwToolExecutionErrorIfNeeded(error, audit: audit, session: session, tools: tools)
+      throw error
     }
 
     return .finalAnswer(
@@ -174,6 +199,26 @@ public struct FoundationModelProvider: StreamingModelProvider {
     }
 
     return nil
+  }
+
+  private func throwToolExecutionErrorIfNeeded(
+    _ error: any Error,
+    audit: FoundationModelToolAudit,
+    session: LanguageModelSession,
+    tools: [any KarmaKit.Tool]
+  ) async throws {
+    let events = try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools)
+    guard !events.isEmpty else {
+      return
+    }
+
+    let description = events.reversed().lazy.compactMap { event in
+      event.errorDescription ?? event.message
+    }.first ?? String(describing: error)
+    throw FoundationModelToolExecutionError(
+      underlyingDescription: description,
+      agentEvents: events
+    )
   }
 }
 

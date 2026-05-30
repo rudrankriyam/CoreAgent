@@ -30,6 +30,7 @@ struct KarmaCLI {
       let modelTimeoutSeconds = arguments.removeOptionValue("--model-timeout-seconds").flatMap(Double.init)
       let runTimeoutSeconds = arguments.removeOptionValue("--run-timeout-seconds").flatMap(Double.init)
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
+      let deniedToolNames = Set(arguments.removeOptionValues("--deny-tool"))
       let prompt = arguments.joined(separator: " ")
       let tools = enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : []
       let redactionPolicy: AgentRedactionPolicy = disablesRedaction ? .none : .standard
@@ -80,6 +81,9 @@ struct KarmaCLI {
         let agent = try ToolCallingAgent(
           tools: tools,
           model: provider,
+          toolExecutionPolicy: deniedToolNames.isEmpty
+            ? AllowAllToolExecutionPolicy()
+            : DenyNamedToolsPolicy(deniedToolNames: deniedToolNames),
           retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
           timeouts: timeouts,
           limits: AgentLimits(
@@ -152,6 +156,7 @@ struct KarmaCLI {
     print("       karma --max-context-messages 12 --demo-tools <prompt>")
     print("       karma --model-timeout-seconds 30 <prompt>")
     print("       karma --run-timeout-seconds 60 <prompt>")
+    print("       karma --demo-tools --deny-tool calculate <prompt>")
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
@@ -230,6 +235,27 @@ private enum DemoTools {
     }
 
     return tools
+  }
+}
+
+private struct DenyNamedToolsPolicy: ToolExecutionPolicy {
+  var deniedToolNames: Set<String>
+
+  func authorize(_ context: ToolExecutionContext) async throws {
+    if deniedToolNames.contains(context.call.name) {
+      throw KarmaCLIError.toolDenied(context.call.name)
+    }
+  }
+}
+
+private enum KarmaCLIError: Error, CustomStringConvertible {
+  case toolDenied(String)
+
+  var description: String {
+    switch self {
+    case .toolDenied(let name):
+      "Tool '\(name)' was denied by CLI policy."
+    }
   }
 }
 
