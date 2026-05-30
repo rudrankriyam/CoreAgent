@@ -54,10 +54,17 @@ public struct FoundationModelProvider: StreamingModelProvider {
     )
 
     let prompt = FoundationModelPrompt.makePrompt(messages: messages)
+    let inputTokens = try await tokenCount(for: prompt)
+    let toolDefinitionTokens = try await tokenCount(for: foundationTools)
     let response = try await session.respond(to: prompt, options: options)
     return .finalAnswer(
       response.content,
-      events: try FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools)
+      events: try FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
+      usage: AgentUsage(
+        inputTokens: inputTokens,
+        outputTokens: try await tokenCount(for: response.content),
+        toolDefinitionTokens: toolDefinitionTokens
+      )
     )
   }
 
@@ -76,6 +83,8 @@ public struct FoundationModelProvider: StreamingModelProvider {
     )
 
     let prompt = FoundationModelPrompt.makePrompt(messages: messages)
+    let inputTokens = try await tokenCount(for: prompt)
+    let toolDefinitionTokens = try await tokenCount(for: foundationTools)
     var finalContent = ""
 
     for try await partialResponse in session.streamResponse(to: prompt, options: options) {
@@ -85,7 +94,12 @@ public struct FoundationModelProvider: StreamingModelProvider {
 
     return .finalAnswer(
       finalContent,
-      events: try FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools)
+      events: try FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
+      usage: AgentUsage(
+        inputTokens: inputTokens,
+        outputTokens: try await tokenCount(for: finalContent),
+        toolDefinitionTokens: toolDefinitionTokens
+      )
     )
   }
 
@@ -121,6 +135,26 @@ public struct FoundationModelProvider: StreamingModelProvider {
     case .unavailable(let reason):
       throw FoundationModelProviderError.unavailable(String(describing: reason))
     }
+  }
+
+  private func tokenCount(for prompt: String) async throws -> Int? {
+    if #available(iOS 26.4, macOS 26.4, visionOS 26.4, *) {
+      return try await model.tokenCount(for: prompt)
+    }
+
+    return nil
+  }
+
+  private func tokenCount(for tools: [any FoundationModels.Tool]) async throws -> Int? {
+    guard !tools.isEmpty else {
+      return nil
+    }
+
+    if #available(iOS 26.4, macOS 26.4, visionOS 26.4, *) {
+      return try await model.tokenCount(for: tools)
+    }
+
+    return nil
   }
 }
 

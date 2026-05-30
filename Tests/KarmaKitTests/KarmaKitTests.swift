@@ -527,6 +527,58 @@ import Foundation
   #expect(metrics.durationSeconds != nil)
 }
 
+@Test func agentRunMetricsAggregateModelUsage() async throws {
+  let model = ScriptedModel(outputs: [
+    .finalAnswer(
+      "done",
+      usage: AgentUsage(inputTokens: 11, outputTokens: 3, toolDefinitionTokens: 5)
+    )
+  ])
+  let agent = ToolCallingAgent(tools: [], model: model)
+
+  let run = try await agent.run("Return usage")
+  let usage = run.metrics.usage
+
+  #expect(usage.inputTokens == 11)
+  #expect(usage.outputTokens == 3)
+  #expect(usage.toolDefinitionTokens == 5)
+  #expect(usage.totalTokens == 19)
+}
+
+@Test func agentUsageSumsPartialTokenFields() {
+  let usage = AgentUsage(inputTokens: 4, outputTokens: nil, toolDefinitionTokens: 2)
+    + AgentUsage(inputTokens: nil, outputTokens: 7, toolDefinitionTokens: nil)
+
+  #expect(usage.inputTokens == 4)
+  #expect(usage.outputTokens == 7)
+  #expect(usage.toolDefinitionTokens == 2)
+  #expect(usage.totalTokens == 13)
+  #expect(AgentUsage().totalTokens == nil)
+}
+
+@Test func agentRunMetricsDecodeWithoutUsage() throws {
+  let json = """
+    {
+      "stepCount": 1,
+      "messageCount": 2,
+      "eventCount": 3,
+      "modelOutputCount": 1,
+      "toolCallCount": 0,
+      "toolResultCount": 0,
+      "limitedToolOutputCount": 0,
+      "modelRetryCount": 0,
+      "partialResponseCount": 0,
+      "isInterrupted": false,
+      "isFailed": false
+    }
+    """
+
+  let metrics = try JSONDecoder().decode(AgentRunMetrics.self, from: Data(json.utf8))
+
+  #expect(metrics.stepCount == 1)
+  #expect(metrics.usage.totalTokens == nil)
+}
+
 @Test func finalAnswerValidatorsCanRejectAnswers() async throws {
   let model = ScriptedModel(outputs: [
     .finalAnswer("   ")
@@ -891,7 +943,14 @@ import Foundation
   let run = AgentRun(
     finalAnswer: "done",
     steps: [
-      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("done"), isFinalAnswer: true)
+      ActionStep(
+        stepNumber: 1,
+        modelOutput: .finalAnswer(
+          "done",
+          usage: AgentUsage(inputTokens: 8, outputTokens: 2, toolDefinitionTokens: 4)
+        ),
+        isFinalAnswer: true
+      )
     ],
     messages: [
       AgentMessage(role: .system, content: "System"),
@@ -914,6 +973,10 @@ import Foundation
   #expect(envelope.metrics.stepCount == 1)
   #expect(envelope.metrics.eventCount == 1)
   #expect(envelope.metrics.durationSeconds == nil)
+  #expect(envelope.metrics.usage.inputTokens == 8)
+  #expect(envelope.metrics.usage.outputTokens == 2)
+  #expect(envelope.metrics.usage.toolDefinitionTokens == 4)
+  #expect(envelope.metrics.usage.totalTokens == 14)
 }
 
 @Test func agentTraceExporterRedactsSensitiveFieldsByDefault() async throws {

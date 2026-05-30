@@ -180,6 +180,46 @@ public struct ToolResult: Codable, Equatable, Sendable {
   }
 }
 
+public struct AgentUsage: Codable, Equatable, Sendable {
+  public var inputTokens: Int?
+  public var outputTokens: Int?
+  public var toolDefinitionTokens: Int?
+
+  public init(inputTokens: Int? = nil, outputTokens: Int? = nil, toolDefinitionTokens: Int? = nil) {
+    self.inputTokens = inputTokens
+    self.outputTokens = outputTokens
+    self.toolDefinitionTokens = toolDefinitionTokens
+  }
+
+  public var totalTokens: Int? {
+    let values = [inputTokens, outputTokens, toolDefinitionTokens].compactMap { $0 }
+    guard !values.isEmpty else {
+      return nil
+    }
+
+    return values.reduce(0, +)
+  }
+
+  public static func + (lhs: AgentUsage, rhs: AgentUsage) -> AgentUsage {
+    AgentUsage(
+      inputTokens: add(lhs.inputTokens, rhs.inputTokens),
+      outputTokens: add(lhs.outputTokens, rhs.outputTokens),
+      toolDefinitionTokens: add(lhs.toolDefinitionTokens, rhs.toolDefinitionTokens)
+    )
+  }
+
+  private static func add(_ lhs: Int?, _ rhs: Int?) -> Int? {
+    switch (lhs, rhs) {
+    case (.some(let lhs), .some(let rhs)):
+      lhs + rhs
+    case (.some(let value), .none), (.none, .some(let value)):
+      value
+    case (.none, .none):
+      nil
+    }
+  }
+}
+
 public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case runStarted
   case modelOutput
@@ -383,13 +423,14 @@ public struct ManagedAgentTool: Tool {
 
 public enum ModelOutput: Codable, Equatable, Sendable {
   case toolCalls([ToolCall])
-  case finalAnswer(String, events: [AgentEvent] = [])
+  case finalAnswer(String, events: [AgentEvent] = [], usage: AgentUsage? = nil)
 
   private enum CodingKeys: String, CodingKey {
     case kind
     case toolCalls
     case answer
     case events
+    case usage
   }
 
   private enum Kind: String, Codable {
@@ -407,7 +448,8 @@ public enum ModelOutput: Codable, Equatable, Sendable {
     case .finalAnswer:
       self = .finalAnswer(
         try container.decode(String.self, forKey: .answer),
-        events: try container.decodeIfPresent([AgentEvent].self, forKey: .events) ?? []
+        events: try container.decodeIfPresent([AgentEvent].self, forKey: .events) ?? [],
+        usage: try container.decodeIfPresent(AgentUsage.self, forKey: .usage)
       )
     }
   }
@@ -419,10 +461,11 @@ public enum ModelOutput: Codable, Equatable, Sendable {
     case .toolCalls(let calls):
       try container.encode(Kind.toolCalls, forKey: .kind)
       try container.encode(calls, forKey: .toolCalls)
-    case .finalAnswer(let answer, let events):
+    case .finalAnswer(let answer, let events, let usage):
       try container.encode(Kind.finalAnswer, forKey: .kind)
       try container.encode(answer, forKey: .answer)
       try container.encode(events, forKey: .events)
+      try container.encodeIfPresent(usage, forKey: .usage)
     }
   }
 
@@ -430,11 +473,21 @@ public enum ModelOutput: Codable, Equatable, Sendable {
     switch self {
     case .toolCalls(let calls):
       return .toolCalls(calls.map { $0.redacted(using: policy) })
-    case .finalAnswer(let answer, let events):
+    case .finalAnswer(let answer, let events, let usage):
       return .finalAnswer(
         policy.redact(answer),
-        events: events.map { $0.redacted(using: policy) }
+        events: events.map { $0.redacted(using: policy) },
+        usage: usage
       )
+    }
+  }
+
+  public var usage: AgentUsage? {
+    switch self {
+    case .toolCalls:
+      nil
+    case .finalAnswer(_, _, let usage):
+      usage
     }
   }
 }
@@ -795,6 +848,23 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
   public var isInterrupted: Bool
   public var isFailed: Bool
   public var durationSeconds: Double?
+  public var usage: AgentUsage
+
+  private enum CodingKeys: String, CodingKey {
+    case stepCount
+    case messageCount
+    case eventCount
+    case modelOutputCount
+    case toolCallCount
+    case toolResultCount
+    case limitedToolOutputCount
+    case modelRetryCount
+    case partialResponseCount
+    case isInterrupted
+    case isFailed
+    case durationSeconds
+    case usage
+  }
 
   public init(
     stepCount: Int,
@@ -808,7 +878,8 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     partialResponseCount: Int,
     isInterrupted: Bool,
     isFailed: Bool,
-    durationSeconds: Double?
+    durationSeconds: Double?,
+    usage: AgentUsage = AgentUsage()
   ) {
     self.stepCount = stepCount
     self.messageCount = messageCount
@@ -822,6 +893,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     self.isInterrupted = isInterrupted
     self.isFailed = isFailed
     self.durationSeconds = durationSeconds
+    self.usage = usage
   }
 
   public init(run: AgentRun) {
@@ -837,8 +909,32 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       partialResponseCount: run.events.filter { $0.kind == .partialResponse }.count,
       isInterrupted: run.events.contains { $0.kind == .runInterrupted },
       isFailed: run.events.contains { $0.kind == .runFailed },
-      durationSeconds: Self.durationSeconds(startedAt: run.startedAt, endedAt: run.endedAt)
+      durationSeconds: Self.durationSeconds(startedAt: run.startedAt, endedAt: run.endedAt),
+      usage: Self.usage(from: run.steps)
     )
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      stepCount: try container.decode(Int.self, forKey: .stepCount),
+      messageCount: try container.decode(Int.self, forKey: .messageCount),
+      eventCount: try container.decode(Int.self, forKey: .eventCount),
+      modelOutputCount: try container.decode(Int.self, forKey: .modelOutputCount),
+      modelRetryCount: try container.decode(Int.self, forKey: .modelRetryCount),
+      toolCallCount: try container.decode(Int.self, forKey: .toolCallCount),
+      toolResultCount: try container.decode(Int.self, forKey: .toolResultCount),
+      limitedToolOutputCount: try container.decode(Int.self, forKey: .limitedToolOutputCount),
+      partialResponseCount: try container.decode(Int.self, forKey: .partialResponseCount),
+      isInterrupted: try container.decode(Bool.self, forKey: .isInterrupted),
+      isFailed: try container.decode(Bool.self, forKey: .isFailed),
+      durationSeconds: try container.decodeIfPresent(Double.self, forKey: .durationSeconds),
+      usage: try container.decodeIfPresent(AgentUsage.self, forKey: .usage) ?? AgentUsage()
+    )
+  }
+
+  private static func usage(from steps: [ActionStep]) -> AgentUsage {
+    steps.compactMap(\.modelOutput.usage).reduce(AgentUsage(), +)
   }
 
   private static func durationSeconds(startedAt: Date?, endedAt: Date?) -> Double? {
@@ -1261,7 +1357,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
         await emit(.init(kind: .modelOutput, stepNumber: stepNumber, message: output.eventSummary))
 
         switch output {
-        case .finalAnswer(let answer, let providerEvents):
+        case .finalAnswer(let answer, let providerEvents, _):
           for event in providerEvents {
             let limitedEvent = limitProviderEvent(event)
             if let message = limitedEvent.message {
