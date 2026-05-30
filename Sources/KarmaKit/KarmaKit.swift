@@ -6,6 +6,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case duplicateToolName(String)
   case invalidToolArguments(tool: String, expected: [String])
   case unexpectedToolArguments(tool: String, unexpected: [String])
+  case invalidToolArgumentValue(tool: String, argument: String, expectedType: String, value: String)
   case finalAnswerRejected(String)
   case timedOut(operation: String, seconds: Double)
   case retryLimitExceeded(attempts: Int, reason: String)
@@ -2277,6 +2278,47 @@ public final class ToolCallingAgent: @unchecked Sendable {
     guard missingRequiredArguments.isEmpty else {
       throw KarmaError.invalidToolArguments(tool: call.name, expected: missingRequiredArguments)
     }
+
+    for argument in providedArguments.sorted() {
+      guard let input = tool.inputs[argument] else {
+        continue
+      }
+      let value = call.arguments[argument, default: ""]
+      guard Self.isValidToolArgumentValue(value, for: input.type) else {
+        throw KarmaError.invalidToolArgumentValue(
+          tool: call.name,
+          argument: argument,
+          expectedType: input.type.rawValue,
+          value: value
+        )
+      }
+    }
+  }
+
+  private static func isValidToolArgumentValue(_ value: String, for type: ToolInput.ValueType) -> Bool {
+    switch type {
+    case .string, .any:
+      return true
+    case .integer:
+      return Int(value) != nil
+    case .number:
+      return Double(value) != nil
+    case .boolean:
+      let lowercasedValue = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      return lowercasedValue == "true" || lowercasedValue == "false"
+    case .object:
+      return jsonValue(from: value) is [String: Any]
+    case .array:
+      return jsonValue(from: value) is [Any]
+    }
+  }
+
+  private static func jsonValue(from value: String) -> Any? {
+    guard let data = value.data(using: .utf8) else {
+      return nil
+    }
+
+    return try? JSONSerialization.jsonObject(with: data)
   }
 
   private func generateModelOutput(

@@ -170,6 +170,82 @@ import Foundation
   #expect(agent.snapshotRun().metrics.toolFailureCount == 1)
 }
 
+@Test func agentRejectsInvalidTypedToolArgumentsBeforeCallingTool() async throws {
+  let counter = CallCounter()
+  let tool = ClosureTool(
+    name: "set_count",
+    description: "Sets a count.",
+    inputs: [
+      "count": ToolInput(type: .integer, description: "Count.")
+    ]
+  ) { _ in
+    await counter.increment()
+    return "unexpected"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "set_count", arguments: ["count": "many"])])
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  await #expect(throws: KarmaError.invalidToolArgumentValue(
+    tool: "set_count",
+    argument: "count",
+    expectedType: "integer",
+    value: "many"
+  )) {
+    _ = try await agent.run("Set count")
+  }
+
+  let failedEvent = try #require(agent.memory.events.first { $0.kind == .toolCallFailed })
+  #expect(await counter.value == 0)
+  #expect(failedEvent.errorDescription == """
+  invalidToolArgumentValue(tool: "set_count", argument: "count", expectedType: "integer", value: "many")
+  """)
+}
+
+@Test func agentAcceptsTypedToolArgumentsBeforeExecution() async throws {
+  let capturedArguments = ArgumentCapture()
+  let tool = ClosureTool(
+    name: "configure",
+    description: "Configures values.",
+    inputs: [
+      "count": ToolInput(type: .integer, description: "Count."),
+      "score": ToolInput(type: .number, description: "Score."),
+      "enabled": ToolInput(type: .boolean, description: "Enabled."),
+      "payload": .object(description: "Payload.", properties: [
+        "name": ToolInput(type: .string, description: "Name.")
+      ]),
+      "items": .array(description: "Items.", items: ToolInput(type: .string, description: "Item."))
+    ]
+  ) { arguments in
+    await capturedArguments.record(arguments)
+    return "configured"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(
+        id: "call_1",
+        name: "configure",
+        arguments: [
+          "count": "3",
+          "score": "4.5",
+          "enabled": "true",
+          "payload": #"{"name":"karma"}"#,
+          "items": #"["a","b"]"#
+        ]
+      )
+    ]),
+    .finalAnswer("done")
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  let run = try await agent.run("Configure")
+
+  #expect(run.finalAnswer == "done")
+  #expect(await capturedArguments.arguments?["count"] == "3")
+  #expect(await capturedArguments.arguments?["enabled"] == "true")
+}
+
 @Test func duplicateToolNamesCanBeRejectedBeforeRun() async throws {
   let firstTool = ClosureTool(name: "echo", description: "Echoes text.", inputs: [:]) { _ in "one" }
   let secondTool = ClosureTool(name: "echo", description: "Echoes text.", inputs: [:]) { _ in "two" }
@@ -2252,6 +2328,14 @@ private actor CallCounter {
 
   func increment() {
     value += 1
+  }
+}
+
+private actor ArgumentCapture {
+  private(set) var arguments: [String: String]?
+
+  func record(_ arguments: [String: String]) {
+    self.arguments = arguments
   }
 }
 
