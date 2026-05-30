@@ -235,6 +235,20 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case runFailed
 }
 
+public struct AgentEventTrace: Codable, Equatable, Sendable {
+  public var runID: String
+  public var eventID: String
+  public var spanID: String
+  public var parentSpanID: String?
+
+  public init(runID: String, eventID: String, spanID: String, parentSpanID: String? = nil) {
+    self.runID = runID
+    self.eventID = eventID
+    self.spanID = spanID
+    self.parentSpanID = parentSpanID
+  }
+}
+
 public struct AgentEvent: Codable, Equatable, Sendable {
   public var kind: AgentEventKind
   public var stepNumber: Int?
@@ -244,6 +258,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
   public var toolCall: ToolCall?
   public var toolResult: ToolResult?
   public var toolManifest: ToolManifest?
+  public var trace: AgentEventTrace?
 
   public init(
     kind: AgentEventKind,
@@ -253,7 +268,8 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     errorDescription: String? = nil,
     toolCall: ToolCall? = nil,
     toolResult: ToolResult? = nil,
-    toolManifest: ToolManifest? = nil
+    toolManifest: ToolManifest? = nil,
+    trace: AgentEventTrace? = nil
   ) {
     self.kind = kind
     self.stepNumber = stepNumber
@@ -263,6 +279,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     self.toolCall = toolCall
     self.toolResult = toolResult
     self.toolManifest = toolManifest
+    self.trace = trace
   }
 
   public func redacted(using policy: AgentRedactionPolicy = .standard) -> AgentEvent {
@@ -274,7 +291,8 @@ public struct AgentEvent: Codable, Equatable, Sendable {
       errorDescription: errorDescription.map(policy.redact),
       toolCall: toolCall?.redacted(using: policy),
       toolResult: toolResult?.redacted(using: policy),
-      toolManifest: toolManifest
+      toolManifest: toolManifest,
+      trace: trace
     )
   }
 }
@@ -1361,6 +1379,67 @@ public struct AgentReceiptExporter {
   }
 }
 
+private struct AgentTraceContext {
+  var runID: String
+  var eventCounter: Int = 0
+  var currentModelStep: Int?
+
+  mutating func trace(for event: AgentEvent) -> AgentEventTrace {
+    eventCounter += 1
+    if event.kind == .modelOutput, let stepNumber = event.stepNumber {
+      currentModelStep = stepNumber
+    }
+    return AgentEventTrace(
+      runID: runID,
+      eventID: "\(runID).event.\(eventCounter)",
+      spanID: spanID(for: event),
+      parentSpanID: parentSpanID(for: event)
+    )
+  }
+
+  private func spanID(for event: AgentEvent) -> String {
+    switch event.kind {
+    case .runStarted:
+      return "run"
+    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed:
+      return modelSpanID(stepNumber: event.stepNumber)
+    case .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
+      if let callID = event.toolCall?.id {
+        return "\(modelSpanID(stepNumber: event.stepNumber)).tool.\(callID)"
+      }
+      return "\(modelSpanID(stepNumber: event.stepNumber)).tool"
+    case .finalAnswerAccepted:
+      return "\(modelSpanID(stepNumber: event.stepNumber)).answer"
+    case .runInterrupted:
+      return "run.interruption"
+    case .runFailed:
+      return "run.failure"
+    }
+  }
+
+  private func parentSpanID(for event: AgentEvent) -> String? {
+    switch event.kind {
+    case .runStarted:
+      return nil
+    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed:
+      return "run"
+    case .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
+      return modelSpanID(stepNumber: event.stepNumber)
+    case .finalAnswerAccepted:
+      return modelSpanID(stepNumber: event.stepNumber)
+    case .runInterrupted, .runFailed:
+      return "run"
+    }
+  }
+
+  private func modelSpanID(stepNumber: Int?) -> String {
+    guard let stepNumber = stepNumber ?? currentModelStep else {
+      return "step.unknown.model"
+    }
+    return "step.\(stepNumber).model"
+  }
+}
+
 private struct AgentEventReceiptPayload: Codable {
   var index: Int
   var previousHash: String?
@@ -1390,6 +1469,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public private(set) var memory: AgentMemory
   private let systemPrompt: String
   private let runGate = AgentRunGate()
+  private var traceContext: AgentTraceContext?
 
   public init(
     tools: [any Tool],
@@ -1541,6 +1621,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     streaming onPartialResponse: (@Sendable (String) async -> Void)?
   ) async throws -> AgentRun {
     let startedAt = Date()
+    traceContext = AgentTraceContext(runID: UUID().uuidString.lowercased())
     if resetsMemoryBeforeRun {
       memory.reset()
     } else if let storedMemory = try await memoryStore?.load() {
@@ -1981,7 +2062,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
         message: limitedMessage,
         toolCall: event.toolCall,
         toolResult: limitedResult,
-        toolManifest: event.toolManifest
+        toolManifest: event.toolManifest,
+        trace: event.trace
       ),
       message
     )
@@ -2000,9 +2082,13 @@ public final class ToolCallingAgent: @unchecked Sendable {
   }
 
   private func emit(_ event: AgentEvent) async {
-    memory.addEvent(event)
+    var tracedEvent = event
+    if tracedEvent.trace == nil {
+      tracedEvent.trace = traceContext?.trace(for: tracedEvent)
+    }
+    memory.addEvent(tracedEvent)
     for observer in observers {
-      await observer.observe(event)
+      await observer.observe(tracedEvent)
     }
   }
 

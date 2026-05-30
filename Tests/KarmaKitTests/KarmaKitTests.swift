@@ -593,6 +593,44 @@ import Foundation
     .finalAnswerAccepted
   ])
   #expect(observedKinds == run.events.map(\.kind))
+
+  let traces = run.events.compactMap(\.trace)
+  #expect(traces.count == run.events.count)
+  #expect(Set(traces.map(\.runID)).count == 1)
+  #expect(Set(traces.map(\.eventID)).count == run.events.count)
+  #expect(run.events[0].trace?.spanID == "run")
+  #expect(run.events[0].trace?.parentSpanID == nil)
+  #expect(run.events[1].trace?.spanID == "step.1.model")
+  #expect(run.events[1].trace?.parentSpanID == "run")
+  #expect(run.events[2].trace?.spanID == "step.1.model.tool.call_1")
+  #expect(run.events[2].trace?.parentSpanID == "step.1.model")
+  #expect(run.events[3].trace?.spanID == "step.1.model.tool.call_1")
+  #expect(run.events[3].trace?.parentSpanID == "step.1.model")
+  #expect(run.events[5].trace?.spanID == "step.2.model.answer")
+  #expect(run.events[5].trace?.parentSpanID == "step.2.model")
+  #expect(await observer.events.allSatisfy { $0.trace != nil })
+}
+
+@Test func providerToolEventsWithoutStepUseCurrentModelSpan() async throws {
+  let model = ScriptedModel(outputs: [
+    .finalAnswer(
+      "done",
+      events: [
+        AgentEvent(
+          kind: .toolCallFinished,
+          toolCall: ToolCall(id: "provider_call", name: "provider_lookup"),
+          toolResult: ToolResult(callID: "provider_call", output: "value")
+        )
+      ]
+    )
+  ])
+  let agent = ToolCallingAgent(tools: [], model: model)
+
+  let run = try await agent.run("Use provider tool")
+  let providerEvent = try #require(run.events.first { $0.toolCall?.id == "provider_call" })
+
+  #expect(providerEvent.trace?.spanID == "step.1.model.tool.provider_call")
+  #expect(providerEvent.trace?.parentSpanID == "step.1.model")
 }
 
 @Test func agentRunReportsDerivedMetrics() async throws {
