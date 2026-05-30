@@ -317,6 +317,8 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case toolCallFinished
   case toolCallFailed
   case toolOutputLimited
+  case contextProvided
+  case contextProviderFailed
   case modelInputWindowed
   case modelInputNormalized
   case memoryRebased
@@ -1121,6 +1123,37 @@ public protocol StreamingModelProvider: ModelProvider {
     tools: [any Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput
+}
+
+public struct AgentContextProviderContext: Sendable {
+  public var task: String
+  public var stepNumber: Int
+  public var memory: AgentMemory
+
+  public init(task: String, stepNumber: Int, memory: AgentMemory) {
+    self.task = task
+    self.stepNumber = stepNumber
+    self.memory = memory
+  }
+}
+
+public protocol AgentContextProvider: Sendable {
+  var name: String { get }
+  func contextMessages(_ context: AgentContextProviderContext) async throws -> [AgentMessage]
+}
+
+public struct StaticAgentContextProvider: AgentContextProvider {
+  public var name: String
+  public var messages: [AgentMessage]
+
+  public init(name: String, messages: [AgentMessage]) {
+    self.name = name
+    self.messages = messages
+  }
+
+  public func contextMessages(_ context: AgentContextProviderContext) async throws -> [AgentMessage] {
+    messages
+  }
 }
 
 public protocol ToolExecutionPolicyConfigurableModelProvider: ModelProvider {
@@ -2461,7 +2494,8 @@ private struct AgentTraceContext {
     switch event.kind {
     case .runStarted:
       return "run"
-    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized, .memoryCompacted:
+    case .modelOutput, .modelRetry, .partialResponse, .contextProvided, .contextProviderFailed,
+         .modelInputWindowed, .modelInputNormalized, .memoryCompacted:
       return modelSpanID(stepNumber: event.stepNumber)
     case .memoryRebased:
       return "run.memory.rebase"
@@ -2490,7 +2524,8 @@ private struct AgentTraceContext {
     switch event.kind {
     case .runStarted:
       return nil
-    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized, .memoryRebased, .memoryCompacted:
+    case .modelOutput, .modelRetry, .partialResponse, .contextProvided, .contextProviderFailed,
+         .modelInputWindowed, .modelInputNormalized, .memoryRebased, .memoryCompacted:
       return "run"
     case .toolCallAuthorized, .toolCallDenied, .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
       return modelSpanID(stepNumber: event.stepNumber)
@@ -2529,6 +2564,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let toolExecutionPolicy: any ToolExecutionPolicy
   public let finalAnswerValidators: [any FinalAnswerValidator]
   public let observers: [any AgentObserver]
+  public let contextProviders: [any AgentContextProvider]
   public let resetsMemoryBeforeRun: Bool
   public let retryPolicy: RetryPolicy
   public let timeouts: AgentTimeouts
@@ -2555,6 +2591,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       PromptInjectionShieldValidator()
     ],
     observers: [any AgentObserver] = [],
+    contextProviders: [any AgentContextProvider] = [],
     resetsMemoryBeforeRun: Bool = true,
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
@@ -2579,6 +2616,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.toolExecutionPolicy = toolExecutionPolicy
     self.finalAnswerValidators = finalAnswerValidators
     self.observers = observers
+    self.contextProviders = contextProviders
     self.resetsMemoryBeforeRun = resetsMemoryBeforeRun
     self.retryPolicy = retryPolicy
     self.timeouts = timeouts
@@ -2602,6 +2640,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       PromptInjectionShieldValidator()
     ],
     observers: [any AgentObserver] = [],
+    contextProviders: [any AgentContextProvider] = [],
     memoryStore: (any AgentMemoryStore)? = nil,
     conversationCompactor: any ConversationCompactor = ExcerptConversationCompactor()
   ) throws {
@@ -2616,6 +2655,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolExecutionPolicy: resolvedToolExecutionPolicy,
       finalAnswerValidators: finalAnswerValidators,
       observers: observers,
+      contextProviders: contextProviders,
       resetsMemoryBeforeRun: configuration.resetsMemoryBeforeRun,
       retryPolicy: configuration.retryPolicy,
       timeouts: configuration.timeouts,
@@ -2640,6 +2680,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       PromptInjectionShieldValidator()
     ],
     observers: [any AgentObserver] = [],
+    contextProviders: [any AgentContextProvider] = [],
     resetsMemoryBeforeRun: Bool = true,
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
@@ -2669,6 +2710,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolExecutionPolicy: toolExecutionPolicy,
       finalAnswerValidators: finalAnswerValidators,
       observers: observers,
+      contextProviders: contextProviders,
       resetsMemoryBeforeRun: resetsMemoryBeforeRun,
       retryPolicy: retryPolicy,
       timeouts: timeouts,
@@ -2849,6 +2891,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
         try await checkInterruption(cancellation, stepNumber: stepNumber)
         let output = try await generateModelOutput(
           stepNumber: stepNumber,
+          task: task,
           cancellation: cancellation,
           onPartialResponse: onPartialResponse
         )
@@ -3604,11 +3647,12 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
   private func generateModelOutput(
     stepNumber: Int,
+    task: String,
     cancellation: AgentCancellation?,
     onPartialResponse: (@Sendable (String) async -> Void)?
   ) async throws -> ModelOutput {
     let tools = Array(tools.values)
-    let messages = await modelInputMessages(stepNumber: stepNumber)
+    let messages = try await modelInputMessages(stepNumber: stepNumber, task: task)
     try enforceModelInputLimit(messages: messages, tools: tools)
     var attempt = 0
     var lastError: Error?
@@ -3672,7 +3716,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     return try await withTimeout(timeout, operation: "model.generation", operation)
   }
 
-  private func modelInputMessages(stepNumber: Int) async -> [AgentMessage] {
+  private func modelInputMessages(stepNumber: Int, task: String) async throws -> [AgentMessage] {
     let windowedMessages: [AgentMessage]
     if let maximumMessages = limits.maximumContextMessages {
       let safeMaximum = max(2, maximumMessages)
@@ -3697,18 +3741,69 @@ public final class ToolCallingAgent: @unchecked Sendable {
       windowedMessages = memory.messages
     }
 
-    let normalizedMessages = AgentMessageNormalizer.normalized(windowedMessages)
-    if normalizedMessages != windowedMessages {
+    let contextualMessages = try await addContextMessages(to: windowedMessages, task: task, stepNumber: stepNumber)
+    let normalizedMessages = AgentMessageNormalizer.normalized(contextualMessages)
+    if normalizedMessages != contextualMessages {
       await emit(
         .init(
           kind: .modelInputNormalized,
           stepNumber: stepNumber,
-          message: "Model input normalized from \(windowedMessages.count) to \(normalizedMessages.count) messages."
+          message: "Model input normalized from \(contextualMessages.count) to \(normalizedMessages.count) messages."
         )
       )
     }
 
     return normalizedMessages
+  }
+
+  private func addContextMessages(
+    to messages: [AgentMessage],
+    task: String,
+    stepNumber: Int
+  ) async throws -> [AgentMessage] {
+    guard !contextProviders.isEmpty else {
+      return messages
+    }
+
+    var providedContextMessages: [AgentMessage] = []
+    let context = AgentContextProviderContext(task: task, stepNumber: stepNumber, memory: memory)
+    for provider in contextProviders {
+      do {
+        let providedMessages = try await provider.contextMessages(context)
+        guard !providedMessages.isEmpty else {
+          continue
+        }
+
+        providedContextMessages.append(contentsOf: providedMessages)
+        await emit(
+          .init(
+            kind: .contextProvided,
+            stepNumber: stepNumber,
+            message: "Context provider '\(provider.name)' added \(providedMessages.count) messages."
+          )
+        )
+      } catch {
+        await emit(
+          .init(
+            kind: .contextProviderFailed,
+            stepNumber: stepNumber,
+            message: "Context provider '\(provider.name)' failed: \(String(describing: error))",
+            errorType: String(reflecting: Swift.type(of: error)),
+            errorDescription: String(describing: error)
+          )
+        )
+        throw error
+      }
+    }
+
+    guard !providedContextMessages.isEmpty else {
+      return messages
+    }
+
+    let leadingSystemMessageCount = messages.prefix { $0.role == .system }.count
+    return Array(messages.prefix(leadingSystemMessageCount))
+      + providedContextMessages
+      + Array(messages.dropFirst(leadingSystemMessageCount))
   }
 
   private func checkInterruption(_ cancellation: AgentCancellation?, stepNumber: Int? = nil) async throws {

@@ -1750,6 +1750,70 @@ import Foundation
   #expect(providerEvent.trace?.parentSpanID == "step.1.model")
 }
 
+@Test func contextProviderAddsMessagesBeforeModelGeneration() async throws {
+  let model = CapturingModel(outputs: [.finalAnswer("done")])
+  let provider = StaticAgentContextProvider(
+    name: "project_context",
+    messages: [
+      AgentMessage(role: .system, content: "Project fact: KarmaKit uses Foundation Models.")
+    ]
+  )
+  let agent = ToolCallingAgent(tools: [], model: model, contextProviders: [provider])
+
+  let run = try await agent.run("Continue")
+  let capturedMessages = try #require(await model.capturedMessages.first)
+
+  #expect(run.finalAnswer == "done")
+  #expect(capturedMessages.first?.role == .system)
+  #expect(capturedMessages.first?.content.contains("Project fact: KarmaKit uses Foundation Models.") == true)
+  #expect(capturedMessages.last?.content == "Continue")
+  #expect(!run.messages.contains { $0.content == "Project fact: KarmaKit uses Foundation Models." })
+  #expect(run.events.contains { $0.kind == .contextProvided && $0.message?.contains("project_context") == true })
+}
+
+@Test func contextProviderFailureStopsBeforeModelGeneration() async throws {
+  let model = CapturingModel(outputs: [.finalAnswer("unexpected")])
+  let provider = ThrowingAgentContextProvider(name: "broken_context")
+  let agent = ToolCallingAgent(tools: [], model: model, contextProviders: [provider])
+
+  await #expect(throws: ContextProviderTestError.failed) {
+    _ = try await agent.run("Continue")
+  }
+
+  #expect(await model.capturedMessages.isEmpty)
+  #expect(agent.memory.events.contains { $0.kind == .contextProviderFailed && $0.message?.contains("broken_context") == true })
+  #expect(agent.memory.events.last?.kind == .runFailed)
+}
+
+@Test func contextProviderMessagesCountTowardModelInputLimit() async throws {
+  let model = CapturingModel(outputs: [.finalAnswer("unexpected")])
+  let provider = StaticAgentContextProvider(
+    name: "large_context",
+    messages: [
+      AgentMessage(role: .system, content: "This context is intentionally too long for the configured input limit.")
+    ]
+  )
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    contextProviders: [provider],
+    limits: AgentLimits(maximumModelInputCharacters: 20)
+  )
+
+  do {
+    _ = try await agent.run("Run")
+    Issue.record("Expected model input limit failure")
+  } catch KarmaError.modelInputTooLarge(let characters, let maximum) {
+    #expect(characters > maximum)
+    #expect(maximum == 20)
+  } catch {
+    Issue.record("Unexpected error: \(error)")
+  }
+
+  #expect(await model.capturedMessages.isEmpty)
+  #expect(agent.memory.events.contains { $0.kind == .contextProvided })
+}
+
 @Test func agentRunReportsDerivedMetrics() async throws {
   let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
     "abcdef"
@@ -3668,6 +3732,18 @@ private enum ToolFailureError: Error, CustomStringConvertible {
     case .offline:
       "offline"
     }
+  }
+}
+
+private enum ContextProviderTestError: Error {
+  case failed
+}
+
+private struct ThrowingAgentContextProvider: AgentContextProvider {
+  var name: String
+
+  func contextMessages(_ context: AgentContextProviderContext) async throws -> [AgentMessage] {
+    throw ContextProviderTestError.failed
   }
 }
 
