@@ -111,6 +111,7 @@ swift run karma --demo-tools --allow-url-host example.com "Fetch https://example
 - `StreamingModelProvider`: streams partial responses when a provider supports it.
 - `AgentRedactionPolicy`: removes token-like values from exported traces and receipts by default.
 - `FileAgentMemoryStore`: saves and reloads agent memory as JSON.
+- Persisted memory is re-anchored to the agent's configured system prompt before use.
 - `AgentTraceExporter`: writes run traces for debugging and audits.
 - `AgentReceiptExporter`: writes and verifies tamper-evident run receipts.
 - `FoundationModelSchemaAdapter`: builds nested Foundation Models schemas from KarmaKit tool inputs.

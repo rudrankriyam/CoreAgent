@@ -317,6 +317,7 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case toolOutputLimited
   case modelInputWindowed
   case modelInputNormalized
+  case memoryRebased
   case memoryCompacted
   case partialResponse
   case finalAnswerRejected
@@ -1270,6 +1271,16 @@ public struct AgentMemory: Codable, Equatable, Sendable {
     events = []
   }
 
+  @discardableResult
+  public mutating func rebaseSystemPrompt(_ prompt: String) -> Bool {
+    let nonSystemMessages = messages.filter { $0.role != .system }
+    let rebasedMessages = [AgentMessage(role: .system, content: prompt)] + nonSystemMessages
+    let didChange = systemPrompt != prompt || messages != rebasedMessages
+    systemPrompt = prompt
+    messages = rebasedMessages
+    return didChange
+  }
+
   public mutating func addTask(_ task: String) {
     messages.append(.init(role: .user, content: task))
   }
@@ -1655,6 +1666,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
   public var limitedToolOutputCount: Int
   public var modelInputWindowedCount: Int
   public var modelInputNormalizedCount: Int
+  public var memoryRebaseCount: Int
   public var memoryCompactionCount: Int
   public var partialResponseCount: Int
   public var finalAnswerRejectionCount: Int
@@ -1676,6 +1688,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     case limitedToolOutputCount
     case modelInputWindowedCount
     case modelInputNormalizedCount
+    case memoryRebaseCount
     case memoryCompactionCount
     case modelRetryCount
     case partialResponseCount
@@ -1700,6 +1713,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     limitedToolOutputCount: Int,
     modelInputWindowedCount: Int = 0,
     modelInputNormalizedCount: Int = 0,
+    memoryRebaseCount: Int = 0,
     memoryCompactionCount: Int = 0,
     partialResponseCount: Int,
     finalAnswerRejectionCount: Int = 0,
@@ -1721,6 +1735,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     self.limitedToolOutputCount = limitedToolOutputCount
     self.modelInputWindowedCount = modelInputWindowedCount
     self.modelInputNormalizedCount = modelInputNormalizedCount
+    self.memoryRebaseCount = memoryRebaseCount
     self.memoryCompactionCount = memoryCompactionCount
     self.partialResponseCount = partialResponseCount
     self.finalAnswerRejectionCount = finalAnswerRejectionCount
@@ -1745,6 +1760,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       limitedToolOutputCount: run.events.filter { $0.kind == .toolOutputLimited }.count,
       modelInputWindowedCount: run.events.filter { $0.kind == .modelInputWindowed }.count,
       modelInputNormalizedCount: run.events.filter { $0.kind == .modelInputNormalized }.count,
+      memoryRebaseCount: run.events.filter { $0.kind == .memoryRebased }.count,
       memoryCompactionCount: run.events.filter { $0.kind == .memoryCompacted }.count,
       partialResponseCount: run.events.filter { $0.kind == .partialResponse }.count,
       finalAnswerRejectionCount: run.events.filter { $0.kind == .finalAnswerRejected }.count,
@@ -1771,6 +1787,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       limitedToolOutputCount: try container.decode(Int.self, forKey: .limitedToolOutputCount),
       modelInputWindowedCount: try container.decodeIfPresent(Int.self, forKey: .modelInputWindowedCount) ?? 0,
       modelInputNormalizedCount: try container.decodeIfPresent(Int.self, forKey: .modelInputNormalizedCount) ?? 0,
+      memoryRebaseCount: try container.decodeIfPresent(Int.self, forKey: .memoryRebaseCount) ?? 0,
       memoryCompactionCount: try container.decodeIfPresent(Int.self, forKey: .memoryCompactionCount) ?? 0,
       partialResponseCount: try container.decode(Int.self, forKey: .partialResponseCount),
       finalAnswerRejectionCount: try container.decodeIfPresent(Int.self, forKey: .finalAnswerRejectionCount) ?? 0,
@@ -2122,6 +2139,8 @@ private struct AgentTraceContext {
       return "run"
     case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized, .memoryCompacted:
       return modelSpanID(stepNumber: event.stepNumber)
+    case .memoryRebased:
+      return "run.memory.rebase"
     case .toolCallAuthorized, .toolCallDenied:
       if let callID = event.toolCall?.id {
         return "\(modelSpanID(stepNumber: event.stepNumber)).tool.\(callID).authorization"
@@ -2147,7 +2166,7 @@ private struct AgentTraceContext {
     switch event.kind {
     case .runStarted:
       return nil
-    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized, .memoryCompacted:
+    case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized, .memoryRebased, .memoryCompacted:
       return "run"
     case .toolCallAuthorized, .toolCallDenied, .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
       return modelSpanID(stepNumber: event.stepNumber)
@@ -2461,6 +2480,9 @@ public final class ToolCallingAgent: @unchecked Sendable {
       memory.reset()
     } else if let storedMemory = try await memoryStore?.load() {
       memory = storedMemory
+      if memory.rebaseSystemPrompt(systemPrompt) {
+        await emit(.init(kind: .memoryRebased, message: "Loaded memory was re-anchored to the configured system prompt."))
+      }
     }
 
     if let maximumMessages = limits.maximumMemoryMessages,
