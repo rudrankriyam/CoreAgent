@@ -87,6 +87,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `AgentTimeouts`: limits long-running model generation and tool calls.
 - `AgentLimits`: caps oversized model input and tool output before they create brittle runs.
 - `AgentLimits.maximumContextMessages`: keeps model input bounded while preserving full run memory.
+- `AgentMessageNormalizer`: merges compatible consecutive messages before provider calls.
 - `StreamingModelProvider`: streams partial responses when a provider supports it.
 - `AgentRedactionPolicy`: removes token-like values from exported traces and receipts by default.
 - `FileAgentMemoryStore`: saves and reloads agent memory as JSON.

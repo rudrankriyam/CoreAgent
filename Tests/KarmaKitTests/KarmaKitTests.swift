@@ -658,6 +658,7 @@ import Foundation
   #expect(metrics.toolFailureCount == 0)
   #expect(metrics.limitedToolOutputCount == 1)
   #expect(metrics.modelInputWindowedCount == 0)
+  #expect(metrics.modelInputNormalizedCount == 0)
   #expect(metrics.modelRetryCount == 0)
   #expect(metrics.partialResponseCount == 0)
   #expect(metrics.isInterrupted == false)
@@ -715,6 +716,7 @@ import Foundation
 
   #expect(metrics.stepCount == 1)
   #expect(metrics.modelInputWindowedCount == 0)
+  #expect(metrics.modelInputNormalizedCount == 0)
   #expect(metrics.toolFailureCount == 0)
   #expect(metrics.usage.totalTokens == nil)
 }
@@ -1169,6 +1171,46 @@ import Foundation
     "Small follow-up"
   ])
   #expect(secondRun.metrics.modelInputWindowedCount == 1)
+}
+
+@Test func modelInputMergesConsecutiveSameRoleMessagesBeforeProviderCall() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("memory.json")
+  let store = FileAgentMemoryStore(fileURL: fileURL)
+  var memory = AgentMemory(systemPrompt: "System")
+  memory.addAssistantMessage("first assistant")
+  memory.addAssistantMessage("second assistant")
+  try await store.save(memory)
+
+  let model = CapturingModel(outputs: [.finalAnswer("done")])
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    resetsMemoryBeforeRun: false,
+    memoryStore: store
+  )
+
+  let run = try await agent.run("Continue")
+  let capturedMessages = await model.capturedMessages
+
+  #expect(capturedMessages.first?.map(\.role) == [.system, .assistant, .user])
+  #expect(capturedMessages.first?.map(\.content) == ["System", "first assistant\nsecond assistant", "Continue"])
+  #expect(run.metrics.modelInputNormalizedCount == 1)
+  #expect(run.events.contains { $0.kind == .modelInputNormalized })
+}
+
+@Test func messageNormalizerKeepsDifferentToolCallResultsSeparate() {
+  let messages = [
+    AgentMessage(role: .tool, content: "first", toolCallID: "call_1"),
+    AgentMessage(role: .tool, content: "second", toolCallID: "call_2"),
+    AgentMessage(role: .tool, content: "third", toolCallID: "call_2")
+  ]
+
+  let normalized = AgentMessageNormalizer.normalized(messages)
+
+  #expect(normalized.map(\.content) == ["first", "second\nthird"])
+  #expect(normalized.map(\.toolCallID) == ["call_1", "call_2"])
 }
 
 @Test func streamingRunChecksModelInputLimitBeforeCallingModel() async throws {
