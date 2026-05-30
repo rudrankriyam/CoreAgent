@@ -19,31 +19,24 @@ The name "Karma" comes from the Sanskrit word कर्म (karma), which means 
 
 ```swift
 import KarmaKit
+import KarmaKitFoundationModels
 
-let weatherTool = ClosureTool(
-  name: "get_weather",
-  description: "Gets the weather for a location.",
-  inputs: [
-    "location": ToolInput(type: .string, description: "The city to inspect.")
-  ]
-) { arguments in
-  "It is sunny in \(arguments["location", default: "somewhere"])."
+if #available(macOS 26.0, iOS 26.0, *) {
+  let provider = FoundationModelProvider()
+  let agent = ToolCallingAgent(tools: [], model: provider)
+  let run = try await agent.run("Explain tool calling in one sentence.")
+
+  print(run.finalAnswer)
 }
-
-let model = ScriptedModel(outputs: [
-  .toolCalls([
-    ToolCall(name: "get_weather", arguments: ["location": "Paris"])
-  ]),
-  .finalAnswer("It is sunny in Paris.")
-])
-
-let agent = ToolCallingAgent(tools: [weatherTool], model: model)
-let run = try await agent.run("What is the weather in Paris?")
-
-print(run.finalAnswer)
 ```
 
 Model providers conform to `ModelProvider` and return either tool calls or a final answer.
+
+## CLI
+
+```bash
+swift run karma "Explain tool calling in one sentence"
+```
 
 ## Current Foundation
 
@@ -52,11 +45,11 @@ Model providers conform to `ModelProvider` and return either tool calls or a fin
 - `ModelProvider`: abstraction for local, hosted, or Apple-provided models.
 - `ToolCallingAgent`: minimal loop that asks a model for tool calls or a final answer.
 - `AgentMemory`: stores messages and action steps.
-- `ScriptedModel`: deterministic provider for tests and demos.
+- `FoundationModelProvider`: Apple Foundation Models backend.
 
 ## Roadmap
 
-- Foundation Models provider after WWDC APIs are confirmed.
+- Foundation Models tool bridge.
 - App Intents bridge.
 - Shortcuts bridge.
 - SwiftData or SQLite memory store.
