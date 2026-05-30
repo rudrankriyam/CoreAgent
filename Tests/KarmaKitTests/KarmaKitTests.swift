@@ -179,6 +179,109 @@ import FoundationModels
   }
 }
 
+@Test func agentRunRecordsInspectableEvents() async throws {
+  let observer = RecordingAgentObserver()
+  let tool = ClosureTool(name: "lookup", description: "Looks up a value.", inputs: [:]) { _ in
+    "value"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "lookup")]),
+    .finalAnswer("done")
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model, observers: [observer])
+
+  let run = try await agent.run("Look up the value")
+  let observedKinds = await observer.events.map(\.kind)
+
+  #expect(run.events.map(\.kind) == [
+    .runStarted,
+    .modelOutput,
+    .toolCallStarted,
+    .toolCallFinished,
+    .modelOutput,
+    .finalAnswerAccepted
+  ])
+  #expect(observedKinds == run.events.map(\.kind))
+}
+
+@Test func finalAnswerValidatorsCanRejectAnswers() async throws {
+  let model = ScriptedModel(outputs: [
+    .finalAnswer("   ")
+  ])
+  let agent = ToolCallingAgent(tools: [], model: model)
+
+  await #expect(throws: KarmaError.finalAnswerRejected("Final answer was empty.")) {
+    _ = try await agent.run("Return nothing")
+  }
+  #expect(agent.memory.events.last?.kind == .runFailed)
+}
+
+@Test func agentResetsMemoryBeforeEachRunByDefault() async throws {
+  let model = ScriptedModel(outputs: [
+    .finalAnswer("first"),
+    .finalAnswer("second")
+  ])
+  let agent = ToolCallingAgent(tools: [], model: model)
+
+  let firstRun = try await agent.run("First")
+  let secondRun = try await agent.run("Second")
+
+  #expect(firstRun.messages.map(\.content).contains("First"))
+  #expect(!secondRun.messages.map(\.content).contains("First"))
+  #expect(secondRun.messages.map(\.content).contains("Second"))
+}
+
+@Test func agentCanPreserveMemoryAcrossRunsWhenConfigured() async throws {
+  let model = ScriptedModel(outputs: [
+    .finalAnswer("first"),
+    .finalAnswer("second")
+  ])
+  let agent = ToolCallingAgent(tools: [], model: model, resetsMemoryBeforeRun: false)
+
+  _ = try await agent.run("First")
+  let secondRun = try await agent.run("Second")
+
+  #expect(secondRun.messages.map(\.content).contains("First"))
+  #expect(secondRun.messages.map(\.content).contains("Second"))
+}
+
+@Test func managedAgentToolReturnsChildAgentAnswer() async throws {
+  let childAgent = ToolCallingAgent(
+    tools: [],
+    model: ScriptedModel(outputs: [.finalAnswer("child handled it")])
+  )
+  let managedTool = ManagedAgentTool(
+    name: "delegate_to_child",
+    description: "Delegates work to a child agent.",
+    agent: childAgent
+  )
+  let parentModel = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "delegate_to_child", arguments: ["task": "Handle this"])])
+  ])
+  let parentAgent = ToolCallingAgent(tools: [managedTool], model: parentModel, maxSteps: 1)
+
+  await #expect(throws: KarmaError.maxStepsReached(1)) {
+    _ = try await parentAgent.run("Delegate this")
+  }
+  #expect(parentAgent.memory.steps.first?.toolResults.first?.output == "child handled it")
+}
+
+@Test func managedAgentToolPropagatesChildAgentFailure() async throws {
+  let childAgent = ToolCallingAgent(
+    tools: [],
+    model: ScriptedModel(outputs: [.finalAnswer("")])
+  )
+  let managedTool = ManagedAgentTool(
+    name: "delegate_to_child",
+    description: "Delegates work to a child agent.",
+    agent: childAgent
+  )
+
+  await #expect(throws: KarmaError.finalAnswerRejected("Final answer was empty.")) {
+    _ = try await managedTool.call(arguments: ["task": "Return empty"])
+  }
+}
+
 private enum PolicyError: Error, Equatable {
   case denied(String)
 }
@@ -190,5 +293,13 @@ private struct DenyToolExecutionPolicy: ToolExecutionPolicy {
     if context.call.name == deniedToolName {
       throw PolicyError.denied(context.call.name)
     }
+  }
+}
+
+private actor RecordingAgentObserver: AgentObserver {
+  private(set) var events: [AgentEvent] = []
+
+  func observe(_ event: AgentEvent) {
+    events.append(event)
   }
 }

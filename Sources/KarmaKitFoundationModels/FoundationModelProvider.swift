@@ -52,7 +52,7 @@ public struct FoundationModelProvider: ModelProvider {
 
     let prompt = FoundationModelPrompt.makePrompt(messages: messages)
     let response = try await session.respond(to: prompt, options: options)
-    return .finalAnswer(response.content)
+    return .finalAnswer(response.content, events: FoundationModelTranscriptEvents.makeEvents(from: session.transcript))
   }
 
   private func validateAvailability() throws {
@@ -62,6 +62,48 @@ public struct FoundationModelProvider: ModelProvider {
     case .unavailable(let reason):
       throw FoundationModelProviderError.unavailable(String(describing: reason))
     }
+  }
+}
+
+@available(iOS 26.0, macOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+enum FoundationModelTranscriptEvents {
+  static func makeEvents(from transcript: Transcript) -> [AgentEvent] {
+    transcript.compactMap { entry in
+      switch entry {
+      case .toolCalls(let toolCalls):
+        let message = toolCalls.map { "\($0.toolName)(\($0.arguments.jsonString))" }.joined(separator: "\n")
+        return AgentEvent(kind: .toolCallStarted, message: message)
+      case .toolOutput(let toolOutput):
+        return AgentEvent(
+          kind: .toolCallFinished,
+          message: toolOutput.segments.karmaJoinedText(),
+          toolResult: ToolResult(callID: toolOutput.id, output: toolOutput.segments.karmaJoinedText())
+        )
+      default:
+        return nil
+      }
+    }
+  }
+}
+
+@available(iOS 26.0, macOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+private extension [Transcript.Segment] {
+  func karmaJoinedText() -> String {
+    map { segment in
+      switch segment {
+      case .text(let text):
+        text.content
+      case .structure(let structure):
+        structure.content.jsonString
+      @unknown default:
+        String(describing: segment)
+      }
+    }
+    .joined(separator: "\n")
   }
 }
 

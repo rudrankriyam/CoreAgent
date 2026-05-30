@@ -37,6 +37,7 @@ Model providers conform to `ModelProvider` and return either tool calls or a fin
 ```bash
 swift run karma "Explain tool calling in one sentence"
 swift run karma --demo-tools "Use the multiply tool to multiply 12 by 13. Return only the number."
+swift run karma --verbose --demo-tools "What time is it? Use the available action."
 ```
 
 ## Current Foundation
@@ -50,6 +51,9 @@ swift run karma --demo-tools "Use the multiply tool to multiply 12 by 13. Return
 - `FoundationModelToolAdapter`: bridges KarmaKit tools into Foundation Models tools.
 - `ToolExecutionPolicy`: authorizes tool calls before execution.
 - `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
+- `ManagedAgentTool`: exposes an agent as a callable tool.
+- `AgentObserver`: records run, model, tool, and answer events.
+- `FinalAnswerValidator`: validates answers before a run succeeds.
 
 ## Roadmap
 

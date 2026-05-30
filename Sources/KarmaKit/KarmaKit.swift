@@ -4,6 +4,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case missingTool(String)
   case duplicateToolName(String)
   case invalidToolArguments(tool: String, expected: [String])
+  case finalAnswerRejected(String)
   case maxStepsReached(Int)
 }
 
@@ -82,6 +83,67 @@ public struct ToolResult: Codable, Equatable, Sendable {
   }
 }
 
+public enum AgentEventKind: String, Codable, Equatable, Sendable {
+  case runStarted
+  case modelOutput
+  case toolCallStarted
+  case toolCallFinished
+  case finalAnswerAccepted
+  case runFailed
+}
+
+public struct AgentEvent: Codable, Equatable, Sendable {
+  public var kind: AgentEventKind
+  public var stepNumber: Int?
+  public var message: String?
+  public var toolCall: ToolCall?
+  public var toolResult: ToolResult?
+
+  public init(
+    kind: AgentEventKind,
+    stepNumber: Int? = nil,
+    message: String? = nil,
+    toolCall: ToolCall? = nil,
+    toolResult: ToolResult? = nil
+  ) {
+    self.kind = kind
+    self.stepNumber = stepNumber
+    self.message = message
+    self.toolCall = toolCall
+    self.toolResult = toolResult
+  }
+}
+
+public protocol AgentObserver: Sendable {
+  func observe(_ event: AgentEvent) async
+}
+
+public struct FinalAnswerValidationContext: Sendable {
+  public var answer: String
+  public var task: String
+  public var memory: AgentMemory
+
+  public init(answer: String, task: String, memory: AgentMemory) {
+    self.answer = answer
+    self.task = task
+    self.memory = memory
+  }
+}
+
+public protocol FinalAnswerValidator: Sendable {
+  func validate(_ context: FinalAnswerValidationContext) async throws
+}
+
+public struct NonEmptyFinalAnswerValidator: FinalAnswerValidator {
+  public init() {}
+
+  public func validate(_ context: FinalAnswerValidationContext) async throws {
+    guard !context.answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw KarmaError.finalAnswerRejected("Final answer was empty.")
+    }
+  }
+}
+
 public protocol Tool: Sendable {
   var name: String { get }
   var description: String { get }
@@ -131,9 +193,40 @@ public struct ClosureTool: Tool {
   }
 }
 
+public struct ManagedAgentTool: Tool {
+  public var name: String
+  public var description: String
+  public var inputs: [String: ToolInput]
+  private let agent: ToolCallingAgent
+
+  public init(
+    name: String,
+    description: String,
+    taskInputName: String = "task",
+    taskInputDescription: String = "The task for the managed agent.",
+    agent: ToolCallingAgent
+  ) {
+    self.name = name
+    self.description = description
+    self.inputs = [
+      taskInputName: ToolInput(type: .string, description: taskInputDescription)
+    ]
+    self.agent = agent
+  }
+
+  public func call(arguments: [String: String]) async throws -> String {
+    guard let task = arguments[inputs.keys.first ?? "task"] else {
+      throw KarmaError.invalidToolArguments(tool: name, expected: Array(inputs.keys).sorted())
+    }
+
+    let run = try await agent.run(task)
+    return run.finalAnswer
+  }
+}
+
 public enum ModelOutput: Equatable, Sendable {
   case toolCalls([ToolCall])
-  case finalAnswer(String)
+  case finalAnswer(String, events: [AgentEvent] = [])
 }
 
 public protocol ModelProvider: Sendable {
@@ -163,11 +256,19 @@ public struct AgentMemory: Sendable {
   public private(set) var systemPrompt: String
   public private(set) var messages: [AgentMessage]
   public private(set) var steps: [ActionStep]
+  public private(set) var events: [AgentEvent]
 
   public init(systemPrompt: String) {
     self.systemPrompt = systemPrompt
     self.messages = [.init(role: .system, content: systemPrompt)]
     self.steps = []
+    self.events = []
+  }
+
+  public mutating func reset() {
+    messages = [.init(role: .system, content: systemPrompt)]
+    steps = []
+    events = []
   }
 
   public mutating func addTask(_ task: String) {
@@ -184,6 +285,10 @@ public struct AgentMemory: Sendable {
 
   public mutating func addStep(_ step: ActionStep) {
     steps.append(step)
+  }
+
+  public mutating func addEvent(_ event: AgentEvent) {
+    events.append(event)
   }
 }
 
@@ -214,11 +319,13 @@ public struct AgentRun: Equatable, Sendable {
   public var finalAnswer: String
   public var steps: [ActionStep]
   public var messages: [AgentMessage]
+  public var events: [AgentEvent]
 
-  public init(finalAnswer: String, steps: [ActionStep], messages: [AgentMessage]) {
+  public init(finalAnswer: String, steps: [ActionStep], messages: [AgentMessage], events: [AgentEvent]) {
     self.finalAnswer = finalAnswer
     self.steps = steps
     self.messages = messages
+    self.events = events
   }
 }
 
@@ -227,6 +334,9 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let tools: [String: any Tool]
   public let maxSteps: Int
   public let toolExecutionPolicy: any ToolExecutionPolicy
+  public let finalAnswerValidators: [any FinalAnswerValidator]
+  public let observers: [any AgentObserver]
+  public let resetsMemoryBeforeRun: Bool
   public private(set) var memory: AgentMemory
 
   public init(
@@ -234,7 +344,10 @@ public final class ToolCallingAgent: @unchecked Sendable {
     model: any ModelProvider,
     systemPrompt: String = "You are a helpful Swift agent. Use tools when useful, then return a final answer.",
     maxSteps: Int = 8,
-    toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy()
+    toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy(),
+    finalAnswerValidators: [any FinalAnswerValidator] = [NonEmptyFinalAnswerValidator()],
+    observers: [any AgentObserver] = [],
+    resetsMemoryBeforeRun: Bool = true
   ) {
     self.model = model
     self.tools = tools.reduce(into: [String: any Tool]()) { partialResult, tool in
@@ -242,6 +355,9 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
     self.maxSteps = maxSteps
     self.toolExecutionPolicy = toolExecutionPolicy
+    self.finalAnswerValidators = finalAnswerValidators
+    self.observers = observers
+    self.resetsMemoryBeforeRun = resetsMemoryBeforeRun
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
 
@@ -251,6 +367,9 @@ public final class ToolCallingAgent: @unchecked Sendable {
     systemPrompt: String = "You are a helpful Swift agent. Use tools when useful, then return a final answer.",
     maxSteps: Int = 8,
     toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy(),
+    finalAnswerValidators: [any FinalAnswerValidator] = [NonEmptyFinalAnswerValidator()],
+    observers: [any AgentObserver] = [],
+    resetsMemoryBeforeRun: Bool = true,
     validatesToolNames: Bool
   ) throws {
     if validatesToolNames {
@@ -267,42 +386,89 @@ public final class ToolCallingAgent: @unchecked Sendable {
       model: model,
       systemPrompt: systemPrompt,
       maxSteps: maxSteps,
-      toolExecutionPolicy: toolExecutionPolicy
+      toolExecutionPolicy: toolExecutionPolicy,
+      finalAnswerValidators: finalAnswerValidators,
+      observers: observers,
+      resetsMemoryBeforeRun: resetsMemoryBeforeRun
     )
   }
 
   public func run(_ task: String) async throws -> AgentRun {
-    memory.addTask(task)
-
-    for stepNumber in 1...maxSteps {
-      let output = try await model.generate(messages: memory.messages, tools: Array(tools.values))
-
-      switch output {
-      case .finalAnswer(let answer):
-        memory.addAssistantMessage(answer)
-        memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, isFinalAnswer: true))
-        return AgentRun(finalAnswer: answer, steps: memory.steps, messages: memory.messages)
-
-      case .toolCalls(let calls):
-        let results = try await calls.asyncMap { call in
-          guard let tool = tools[call.name] else {
-            throw KarmaError.missingTool(call.name)
-          }
-
-          try await toolExecutionPolicy.authorize(.init(call: call, stepNumber: stepNumber, task: task))
-          let output = try await tool.call(arguments: call.arguments)
-          return ToolResult(callID: call.id, output: output)
-        }
-
-        for result in results {
-          memory.addToolResult(result)
-        }
-
-        memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, toolResults: results))
-      }
+    if resetsMemoryBeforeRun {
+      memory.reset()
     }
 
-    throw KarmaError.maxStepsReached(maxSteps)
+    await emit(.init(kind: .runStarted, message: task))
+    memory.addTask(task)
+
+    do {
+      for stepNumber in 1...maxSteps {
+        let output = try await model.generate(messages: memory.messages, tools: Array(tools.values))
+        await emit(.init(kind: .modelOutput, stepNumber: stepNumber, message: output.eventSummary))
+
+        switch output {
+        case .finalAnswer(let answer, let providerEvents):
+          for event in providerEvents {
+            await emit(event)
+          }
+          try await validateFinalAnswer(answer, task: task)
+          memory.addAssistantMessage(answer)
+          memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, isFinalAnswer: true))
+          await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: answer))
+          return AgentRun(finalAnswer: answer, steps: memory.steps, messages: memory.messages, events: memory.events)
+
+        case .toolCalls(let calls):
+          let results = try await calls.asyncMap { call in
+            guard let tool = tools[call.name] else {
+              throw KarmaError.missingTool(call.name)
+            }
+
+            try await toolExecutionPolicy.authorize(.init(call: call, stepNumber: stepNumber, task: task))
+            await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call))
+            let output = try await tool.call(arguments: call.arguments)
+            let result = ToolResult(callID: call.id, output: output)
+            await emit(.init(kind: .toolCallFinished, stepNumber: stepNumber, toolCall: call, toolResult: result))
+            return result
+          }
+
+          for result in results {
+            memory.addToolResult(result)
+          }
+
+          memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, toolResults: results))
+        }
+      }
+
+      throw KarmaError.maxStepsReached(maxSteps)
+    } catch {
+      await emit(.init(kind: .runFailed, message: String(describing: error)))
+      throw error
+    }
+  }
+
+  private func validateFinalAnswer(_ answer: String, task: String) async throws {
+    let context = FinalAnswerValidationContext(answer: answer, task: task, memory: memory)
+    for validator in finalAnswerValidators {
+      try await validator.validate(context)
+    }
+  }
+
+  private func emit(_ event: AgentEvent) async {
+    memory.addEvent(event)
+    for observer in observers {
+      await observer.observe(event)
+    }
+  }
+}
+
+private extension ModelOutput {
+  var eventSummary: String {
+    switch self {
+    case .finalAnswer:
+      "finalAnswer"
+    case .toolCalls(let calls):
+      "toolCalls(\(calls.map(\.name).joined(separator: ",")))"
+    }
   }
 }
 

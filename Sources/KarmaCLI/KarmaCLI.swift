@@ -14,6 +14,7 @@ struct KarmaCLI {
       }
 
       let enablesDemoTools = arguments.removeAll("--demo-tools")
+      let enablesVerboseOutput = arguments.removeAll("--verbose")
       let prompt = arguments.joined(separator: " ")
 
       if #available(macOS 26.0, *) {
@@ -27,6 +28,9 @@ struct KarmaCLI {
         )
         let run = try await agent.run(prompt)
         print(run.finalAnswer)
+        if enablesVerboseOutput {
+          fputs("\n\(run.events.karmaDebugDescription)\n", stderr)
+        }
       } else {
         fputs("Karma requires macOS 26 or newer for Foundation Models.\n", stderr)
         Foundation.exit(1)
@@ -40,6 +44,7 @@ struct KarmaCLI {
   private static func printUsage() {
     print("Usage: karma <prompt>")
     print("       karma --demo-tools <prompt>")
+    print("       karma --verbose --demo-tools <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
   }
 }
@@ -75,5 +80,22 @@ private extension Array where Element == String {
     let originalCount = count
     self = filter { $0 != value }
     return count != originalCount
+  }
+}
+
+private extension Array where Element == AgentEvent {
+  var karmaDebugDescription: String {
+    guard !isEmpty else {
+      return "Events: none"
+    }
+
+    return (["Events:"] + enumerated().map { index, event in
+      var parts = ["\(index + 1). \(event.kind.rawValue)"]
+      if let message = event.message, !message.isEmpty {
+        parts.append(message.replacingOccurrences(of: "\n", with: " "))
+      }
+      return parts.joined(separator: " - ")
+    })
+    .joined(separator: "\n")
   }
 }
