@@ -2443,6 +2443,29 @@ import Foundation
   #expect(memory.messages.suffix(2).map(\.content) == ["Third task", "Third answer"])
 }
 
+@Test func memoryCompactionCanUseStructuredSummary() {
+  var memory = AgentMemory(systemPrompt: "System")
+  memory.addTask("Prefer local models")
+  memory.addAssistantMessage("Decision: use provider-backed summaries")
+  memory.addTask("Next continue memory work")
+  memory.addAssistantMessage("Recent answer")
+  let summary = AgentMemorySummary(
+    overview: "Summarized old memory.",
+    userPreferences: ["Prefer local models."],
+    decisions: ["Use provider-backed summaries."],
+    openThreads: ["Continue memory work."],
+    durableFacts: ["Project is KarmaKit."],
+    toolResultsWorthRemembering: ["No tool results."]
+  )
+
+  let result = memory.compactMessages(maximumMessages: 4, summary: summary)
+
+  #expect(result?.structuredSummary == summary)
+  #expect(memory.messages[1].content.contains("Overview: Summarized old memory."))
+  #expect(memory.messages[1].content.contains("User preferences:\n- Prefer local models."))
+  #expect(memory.messages[1].content.contains("Decisions:\n- Use provider-backed summaries."))
+}
+
 @Test func memoryCompactionRunsBeforePersistedMemoryIsUsed() async throws {
   let fileURL = FileManager.default.temporaryDirectory
     .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
@@ -2473,11 +2496,99 @@ import Foundation
 
   #expect(run.metrics.memoryCompactionCount == 1)
   #expect(run.events.first?.kind == .memoryCompacted)
-  #expect(capturedMessages.first?.contains { $0.content.contains("Earlier conversation compacted") } == true)
+  #expect(capturedMessages.first?.contains { $0.content.contains("Earlier conversation summary") } == true)
   #expect(capturedMessages.first?.contains { $0.content == "Old task 1" } == false)
   #expect(capturedMessages.first?.contains { $0.content == "Recent answer" } == true)
   #expect(storedMemory.messages.count == run.messages.count)
-  #expect(storedMemory.messages.contains { $0.content.contains("Earlier conversation compacted") })
+  #expect(storedMemory.messages.contains { $0.content.contains("Earlier conversation summary") })
+}
+
+@Test func agentUsesConversationCompactorForPersistedMemory() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("memory.json")
+  let store = FileAgentMemoryStore(fileURL: fileURL)
+  var memory = AgentMemory(systemPrompt: "System")
+  memory.addTask("Prefer local summaries")
+  memory.addAssistantMessage("Decision: keep recent messages verbatim")
+  memory.addTask("Recent task")
+  memory.addAssistantMessage("Recent answer")
+  try await store.save(memory)
+
+  let compactor = RecordingConversationCompactor(summary: AgentMemorySummary(
+    overview: "Semantic summary of earlier work.",
+    userPreferences: ["Prefer local summaries."],
+    decisions: ["Keep recent messages verbatim."],
+    openThreads: ["Continue the agent memory foundation."]
+  ))
+  let model = CapturingModel(outputs: [.finalAnswer("done")])
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    systemPrompt: "System",
+    resetsMemoryBeforeRun: false,
+    limits: AgentLimits(maximumMemoryMessages: 4),
+    memoryStore: store,
+    conversationCompactor: compactor
+  )
+
+  let run = try await agent.run("Continue")
+  let compactedMessages = await compactor.capturedMessages
+  let capturedMessages = try #require(await model.capturedMessages.first)
+
+  #expect(compactedMessages.map(\.content) == ["Prefer local summaries", "Decision: keep recent messages verbatim"])
+  #expect(capturedMessages.contains { $0.content.contains("Overview: Semantic summary of earlier work.") })
+  #expect(capturedMessages.contains { $0.content == "Recent task" })
+  #expect(capturedMessages.contains { $0.content == "Recent answer" })
+  #expect(capturedMessages.contains { $0.content == "Continue" })
+  #expect(run.metrics.memoryCompactionCount == 1)
+}
+
+@Test func modelConversationCompactorParsesStructuredSummary() async throws {
+  let json = """
+  {
+    "overview": "The user is building an agent system.",
+    "userPreferences": ["Keep work local."],
+    "decisions": ["Use structured memory."],
+    "openThreads": ["Finish provider-backed compaction."],
+    "durableFacts": ["Project is KarmaKit."],
+    "toolResultsWorthRemembering": ["Tests passed."]
+  }
+  """
+  let model = CapturingModel(outputs: [.finalAnswer(json)])
+  let compactor = ModelConversationCompactor(model: model)
+
+  let summary = try await compactor.compact(
+    messages: [
+      AgentMessage(role: .user, content: "Remember this project fact."),
+      AgentMessage(role: .assistant, content: "Tests passed.")
+    ],
+    targetTokenBudget: 256
+  )
+  let capturedMessages = try #require(await model.capturedMessages.first)
+
+  #expect(summary.overview == "The user is building an agent system.")
+  #expect(summary.userPreferences == ["Keep work local."])
+  #expect(summary.decisions == ["Use structured memory."])
+  #expect(capturedMessages.last?.content.contains("targetTokenBudget") == false)
+  #expect(capturedMessages.last?.content.contains("Return JSON only.") == true)
+}
+
+@Test func modelConversationCompactorFallsBackWhenProviderCannotSummarize() async throws {
+  let model = CapturingModel(outputs: [.toolCalls([ToolCall(name: "unexpected")])])
+  let compactor = ModelConversationCompactor(model: model)
+
+  let summary = try await compactor.compact(
+    messages: [
+      AgentMessage(role: .user, content: "I prefer local models."),
+      AgentMessage(role: .assistant, content: "Decision: use structured summaries.")
+    ],
+    targetTokenBudget: 256
+  )
+
+  #expect(summary.overview.contains("2 earlier messages"))
+  #expect(summary.userPreferences.contains { $0.contains("prefer local models") })
+  #expect(summary.decisions.contains { $0.contains("structured summaries") })
 }
 
 @Test func persistedMemoryCannotOverrideConfiguredSystemPrompt() async throws {
@@ -3633,6 +3744,22 @@ private actor CapturingModel: ModelProvider {
     let output = outputs[index]
     index += 1
     return output
+  }
+}
+
+private actor RecordingConversationCompactor: ConversationCompactor {
+  private let summary: AgentMemorySummary
+  private(set) var capturedMessages: [AgentMessage] = []
+  private(set) var capturedTargetTokenBudget: Int?
+
+  init(summary: AgentMemorySummary) {
+    self.summary = summary
+  }
+
+  func compact(messages: [AgentMessage], targetTokenBudget: Int) async throws -> AgentMemorySummary {
+    capturedMessages = messages
+    capturedTargetTokenBudget = targetTokenBudget
+    return summary
   }
 }
 

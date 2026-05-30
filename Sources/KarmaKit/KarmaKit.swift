@@ -848,6 +848,157 @@ public protocol ModelProvider: Sendable {
   func generate(messages: [AgentMessage], tools: [any Tool]) async throws -> ModelOutput
 }
 
+public struct AgentMemorySummary: Codable, Equatable, Sendable {
+  public var overview: String
+  public var userPreferences: [String]
+  public var decisions: [String]
+  public var openThreads: [String]
+  public var durableFacts: [String]
+  public var toolResultsWorthRemembering: [String]
+
+  public init(
+    overview: String,
+    userPreferences: [String] = [],
+    decisions: [String] = [],
+    openThreads: [String] = [],
+    durableFacts: [String] = [],
+    toolResultsWorthRemembering: [String] = []
+  ) {
+    self.overview = overview
+    self.userPreferences = userPreferences
+    self.decisions = decisions
+    self.openThreads = openThreads
+    self.durableFacts = durableFacts
+    self.toolResultsWorthRemembering = toolResultsWorthRemembering
+  }
+
+  public var message: String {
+    [
+      "Earlier conversation summary:",
+      "Overview: \(overview)",
+      section("User preferences", userPreferences),
+      section("Decisions", decisions),
+      section("Open threads", openThreads),
+      section("Durable facts", durableFacts),
+      section("Tool results worth remembering", toolResultsWorthRemembering)
+    ].filter { !$0.isEmpty }.joined(separator: "\n")
+  }
+
+  private func section(_ title: String, _ values: [String]) -> String {
+    let cleanedValues = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    guard !cleanedValues.isEmpty else {
+      return ""
+    }
+
+    return "\(title):\n" + cleanedValues.map { "- \($0)" }.joined(separator: "\n")
+  }
+}
+
+public protocol ConversationCompactor: Sendable {
+  func compact(messages: [AgentMessage], targetTokenBudget: Int) async throws -> AgentMemorySummary
+}
+
+public struct ExcerptConversationCompactor: ConversationCompactor {
+  public init() {}
+
+  public func compact(messages: [AgentMessage], targetTokenBudget: Int) async throws -> AgentMemorySummary {
+    let nonEmptyMessages = messages.filter { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    let first = nonEmptyMessages.first.map(Self.excerpt)
+    let last = nonEmptyMessages.last.map(Self.excerpt)
+    let overview = [
+      "\(messages.count) earlier messages from \(messages.first?.role.rawValue ?? "unknown") through \(messages.last?.role.rawValue ?? "unknown").",
+      first.map { "First: \($0)" },
+      last.map { "Last: \($0)" }
+    ].compactMap { $0 }.joined(separator: " ")
+
+    return AgentMemorySummary(
+      overview: overview,
+      userPreferences: Self.messages(containing: ["prefer", "preference", "do not", "don't"], in: messages),
+      decisions: Self.messages(containing: ["decided", "decision", "agreed", "ship", "pushed"], in: messages),
+      openThreads: Self.messages(containing: ["todo", "next", "open", "unresolved", "continue"], in: messages),
+      durableFacts: Self.messages(containing: ["always", "never", "project", "repo", "branch"], in: messages),
+      toolResultsWorthRemembering: messages.filter { $0.role == .tool }.prefix(3).map(Self.excerpt)
+    )
+  }
+
+  private static func messages(containing markers: [String], in messages: [AgentMessage]) -> [String] {
+    messages.compactMap { message in
+      let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+      let lowercasedContent = content.lowercased()
+      guard markers.contains(where: { lowercasedContent.contains($0) }) else {
+        return nil
+      }
+      return excerpt(message)
+    }
+  }
+
+  private static func excerpt(_ message: AgentMessage) -> String {
+    "\(message.role.rawValue): \(String(message.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240)))"
+  }
+}
+
+public struct ModelConversationCompactor: ConversationCompactor {
+  public var model: any ModelProvider
+  public var fallback: any ConversationCompactor
+
+  public init(model: any ModelProvider, fallback: any ConversationCompactor = ExcerptConversationCompactor()) {
+    self.model = model
+    self.fallback = fallback
+  }
+
+  public func compact(messages: [AgentMessage], targetTokenBudget: Int) async throws -> AgentMemorySummary {
+    let prompt = Self.prompt(messages: messages, targetTokenBudget: targetTokenBudget)
+    do {
+      let output = try await model.generate(
+        messages: [
+          AgentMessage(role: .system, content: "Summarize agent memory into strict JSON."),
+          AgentMessage(role: .user, content: prompt)
+        ],
+        tools: []
+      )
+
+      guard case .finalAnswer(let answer, _, _) = output else {
+        return try await fallback.compact(messages: messages, targetTokenBudget: targetTokenBudget)
+      }
+
+      return try Self.decodeSummary(from: answer)
+    } catch {
+      return try await fallback.compact(messages: messages, targetTokenBudget: targetTokenBudget)
+    }
+  }
+
+  private static func prompt(messages: [AgentMessage], targetTokenBudget: Int) -> String {
+    let transcript = messages.map { "\($0.role.rawValue): \($0.content)" }.joined(separator: "\n\n")
+    return """
+    Summarize the transcript into JSON matching this shape:
+    {
+      "overview": "short semantic summary",
+      "userPreferences": ["stable preferences"],
+      "decisions": ["decisions already made"],
+      "openThreads": ["unresolved goals or next work"],
+      "durableFacts": ["stable user/project facts"],
+      "toolResultsWorthRemembering": ["important tool results"]
+    }
+    Keep it within about \(targetTokenBudget) tokens. Return JSON only.
+
+    Transcript:
+    \(transcript)
+    """
+  }
+
+  private static func decodeSummary(from answer: String) throws -> AgentMemorySummary {
+    let trimmedAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+    let jsonText: String
+    if let start = trimmedAnswer.firstIndex(of: "{"), let end = trimmedAnswer.lastIndex(of: "}"), start <= end {
+      jsonText = String(trimmedAnswer[start...end])
+    } else {
+      jsonText = trimmedAnswer
+    }
+
+    return try JSONDecoder().decode(AgentMemorySummary.self, from: Data(jsonText.utf8))
+  }
+}
+
 public protocol StreamingModelProvider: ModelProvider {
   func stream(
     messages: [AgentMessage],
@@ -1336,6 +1487,33 @@ public struct AgentMemory: Codable, Equatable, Sendable {
 
   @discardableResult
   public mutating func compactMessages(maximumMessages: Int) -> AgentMemoryCompactionResult? {
+    compactMessagesInternal(maximumMessages: maximumMessages, summary: nil)
+  }
+
+  @discardableResult
+  public mutating func compactMessages(
+    maximumMessages: Int,
+    summary: AgentMemorySummary
+  ) -> AgentMemoryCompactionResult? {
+    compactMessagesInternal(maximumMessages: maximumMessages, summary: summary)
+  }
+
+  public func messagesToCompact(maximumMessages: Int) -> [AgentMessage] {
+    let safeMaximum = max(3, maximumMessages)
+    guard messages.count > safeMaximum else {
+      return []
+    }
+
+    let systemMessage = messages.first { $0.role == .system }
+    let nonSystemMessages = messages.filter { $0.role != .system }
+    let retainedNonSystemCount = max(1, safeMaximum - (systemMessage == nil ? 1 : 2))
+    return Array(nonSystemMessages.dropLast(retainedNonSystemCount))
+  }
+
+  private mutating func compactMessagesInternal(
+    maximumMessages: Int,
+    summary providedSummary: AgentMemorySummary?
+  ) -> AgentMemoryCompactionResult? {
     let safeMaximum = max(3, maximumMessages)
     guard messages.count > safeMaximum else {
       return nil
@@ -1350,13 +1528,7 @@ public struct AgentMemory: Codable, Equatable, Sendable {
       return nil
     }
 
-    let summary = AgentMemoryCompactionSummary(
-      messageCount: compactedMessages.count,
-      firstRole: compactedMessages.first?.role,
-      lastRole: compactedMessages.last?.role,
-      firstExcerpt: compactedMessages.first.map(Self.compactionExcerpt),
-      lastExcerpt: compactedMessages.last.map(Self.compactionExcerpt)
-    )
+    let summary = providedSummary ?? AgentMemoryCompactionSummary(messages: compactedMessages).summary
     let summaryMessage = AgentMessage(role: .assistant, content: summary.message)
     messages = systemMessage.map { [$0, summaryMessage] + retainedMessages } ?? [summaryMessage] + retainedMessages
 
@@ -1364,7 +1536,8 @@ public struct AgentMemory: Codable, Equatable, Sendable {
       originalMessageCount: compactedMessages.count + retainedMessages.count + (systemMessage == nil ? 0 : 1),
       compactedMessageCount: compactedMessages.count,
       retainedMessageCount: messages.count,
-      summary: summary.message
+      summary: summary.message,
+      structuredSummary: summary
     )
   }
 
@@ -1382,9 +1555,6 @@ public struct AgentMemory: Codable, Equatable, Sendable {
     }
   }
 
-  private static func compactionExcerpt(_ message: AgentMessage) -> String {
-    String(message.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
-  }
 }
 
 public struct AgentMemoryCompactionResult: Codable, Equatable, Sendable {
@@ -1392,35 +1562,40 @@ public struct AgentMemoryCompactionResult: Codable, Equatable, Sendable {
   public var compactedMessageCount: Int
   public var retainedMessageCount: Int
   public var summary: String
+  public var structuredSummary: AgentMemorySummary
 
   public init(
     originalMessageCount: Int,
     compactedMessageCount: Int,
     retainedMessageCount: Int,
-    summary: String
+    summary: String,
+    structuredSummary: AgentMemorySummary
   ) {
     self.originalMessageCount = originalMessageCount
     self.compactedMessageCount = compactedMessageCount
     self.retainedMessageCount = retainedMessageCount
     self.summary = summary
+    self.structuredSummary = structuredSummary
   }
 }
 
 private struct AgentMemoryCompactionSummary {
-  var messageCount: Int
-  var firstRole: MessageRole?
-  var lastRole: MessageRole?
-  var firstExcerpt: String?
-  var lastExcerpt: String?
+  var messages: [AgentMessage]
 
-  var message: String {
-    let first = firstExcerpt.map { "\($0)" } ?? ""
-    let last = lastExcerpt.map { "\($0)" } ?? ""
-    let firstRoleText = firstRole?.rawValue ?? "unknown"
-    let lastRoleText = lastRole?.rawValue ?? "unknown"
-    return """
-    Earlier conversation compacted: \(messageCount) messages from \(firstRoleText) through \(lastRoleText). First: \(first) Last: \(last)
-    """
+  var summary: AgentMemorySummary {
+    let first = messages.first.map(Self.excerpt)
+    let last = messages.last.map(Self.excerpt)
+    return AgentMemorySummary(
+      overview: [
+        "Earlier conversation compacted: \(messages.count) messages from \(messages.first?.role.rawValue ?? "unknown") through \(messages.last?.role.rawValue ?? "unknown").",
+        first.map { "First: \($0)" },
+        last.map { "Last: \($0)" }
+      ].compactMap { $0 }.joined(separator: " ")
+    )
+  }
+
+  private static func excerpt(_ message: AgentMessage) -> String {
+    String(message.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
   }
 }
 
@@ -2247,6 +2422,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let finalAnswerRecoveryMode: FinalAnswerRecoveryMode
   public let completionMode: AgentCompletionMode
   public let memoryStore: (any AgentMemoryStore)?
+  public let conversationCompactor: any ConversationCompactor
   public private(set) var memory: AgentMemory
   private let systemPrompt: String
   private let runGate = AgentRunGate()
@@ -2271,7 +2447,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
     finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
     completionMode: AgentCompletionMode = .finalAnswer,
-    memoryStore: (any AgentMemoryStore)? = nil
+    memoryStore: (any AgentMemoryStore)? = nil,
+    conversationCompactor: any ConversationCompactor = ExcerptConversationCompactor()
   ) {
     self.systemPrompt = systemPrompt
     self.model = if let configurableModel = model as? any ToolExecutionPolicyConfigurableModelProvider {
@@ -2295,6 +2472,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.finalAnswerRecoveryMode = finalAnswerRecoveryMode
     self.completionMode = completionMode
     self.memoryStore = memoryStore
+    self.conversationCompactor = conversationCompactor
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
 
@@ -2308,7 +2486,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
       PromptInjectionShieldValidator()
     ],
     observers: [any AgentObserver] = [],
-    memoryStore: (any AgentMemoryStore)? = nil
+    memoryStore: (any AgentMemoryStore)? = nil,
+    conversationCompactor: any ConversationCompactor = ExcerptConversationCompactor()
   ) throws {
     try configuration.verifyTools(tools)
     let resolvedToolExecutionPolicy: any ToolExecutionPolicy = toolExecutionPolicy
@@ -2329,7 +2508,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolArgumentErrorRecoveryMode: configuration.toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: configuration.finalAnswerRecoveryMode,
       completionMode: configuration.completionMode,
-      memoryStore: memoryStore
+      memoryStore: memoryStore,
+      conversationCompactor: conversationCompactor
     )
   }
 
@@ -2353,6 +2533,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
     completionMode: AgentCompletionMode = .finalAnswer,
     memoryStore: (any AgentMemoryStore)? = nil,
+    conversationCompactor: any ConversationCompactor = ExcerptConversationCompactor(),
     validatesToolNames: Bool
   ) throws {
     if validatesToolNames {
@@ -2380,7 +2561,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
       completionMode: completionMode,
-      memoryStore: memoryStore
+      memoryStore: memoryStore,
+      conversationCompactor: conversationCompactor
     )
   }
 
@@ -2518,14 +2700,22 @@ public final class ToolCallingAgent: @unchecked Sendable {
       }
     }
 
-    if let maximumMessages = limits.maximumMemoryMessages,
-       let compaction = memory.compactMessages(maximumMessages: maximumMessages) {
-      await emit(
-        .init(
-          kind: .memoryCompacted,
-          message: "Memory compacted from \(compaction.originalMessageCount) to \(compaction.retainedMessageCount) messages."
+    if let maximumMessages = limits.maximumMemoryMessages {
+      let messagesToCompact = memory.messagesToCompact(maximumMessages: maximumMessages)
+      if !messagesToCompact.isEmpty {
+        let summary = try await conversationCompactor.compact(
+          messages: messagesToCompact,
+          targetTokenBudget: max(128, maximumMessages * 128)
         )
-      )
+        if let compaction = memory.compactMessages(maximumMessages: maximumMessages, summary: summary) {
+          await emit(
+            .init(
+              kind: .memoryCompacted,
+              message: "Memory compacted from \(compaction.originalMessageCount) to \(compaction.retainedMessageCount) messages."
+            )
+          )
+        }
+      }
     }
 
     await emit(.init(kind: .runStarted, message: task))
