@@ -1,8 +1,8 @@
 # CoreAgent
 
-A Swift agent runtime for Apple's on-device AI stack.
+A Swift runtime for on-device agents on Apple platforms.
 
-CoreAgent gives Apple-platform apps a small, inspectable foundation for tool-calling agents: Swift-native tools, structured memory, approval gates, run traces, receipts, and a Foundation Models backend that stays local to the Apple stack.
+CoreAgent gives Apple-platform apps a small, inspectable foundation for on-device agents: Swift-native tools, structured memory, approval gates, run traces, receipts, and a Foundation Models backend that stays local to the Apple stack.
 
 It is built around Apple Foundation Models today and designed to grow with the broader local AI surface across iOS, macOS, and visionOS.
 
