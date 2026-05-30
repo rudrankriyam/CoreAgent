@@ -63,9 +63,11 @@ import Foundation
   #expect(await probe.maximumRunning == 2)
   #expect(run.steps.first?.toolResults.map(\.callID) == ["call_1", "call_2"])
   #expect(run.steps.first?.toolResults.map(\.output) == ["one", "two"])
-  #expect(run.events.map(\.kind).prefix(4) == [
+  #expect(run.events.map(\.kind).prefix(6) == [
     .runStarted,
     .modelOutput,
+    .toolCallAuthorized,
+    .toolCallAuthorized,
     .toolCallStarted,
     .toolCallStarted
   ])
@@ -97,7 +99,9 @@ import Foundation
     _ = try await agent.run("Run both tools")
   }
   #expect(await counter.value == 0)
-  #expect(agent.memory.events.map(\.kind) == [.runStarted, .modelOutput, .runFailed])
+  #expect(agent.memory.events.map(\.kind) == [.runStarted, .modelOutput, .toolCallAuthorized, .toolCallDenied, .runFailed])
+  #expect(agent.snapshotRun().metrics.toolAuthorizationCount == 1)
+  #expect(agent.snapshotRun().metrics.toolDenialCount == 1)
 }
 
 @Test func closureToolValidatesRequiredArguments() async throws {
@@ -183,6 +187,12 @@ import Foundation
   await #expect(throws: PolicyError.denied("delete_file")) {
     _ = try await agent.run("Delete the file")
   }
+
+  let deniedEvent = try #require(agent.memory.events.first { $0.kind == .toolCallDenied })
+  #expect(deniedEvent.toolCall?.name == "delete_file")
+  #expect(deniedEvent.errorDescription == "denied(\"delete_file\")")
+  #expect(deniedEvent.toolManifest?.name == "delete_file")
+  #expect(agent.snapshotRun().metrics.toolDenialCount == 1)
 }
 
 @Test func toolManifestDigestChangesWhenToolDefinitionChanges() throws {
@@ -221,10 +231,11 @@ import Foundation
   )
 
   let run = try await agent.run("Use lookup")
-  let startedEvent = run.events.first { $0.kind == .toolCallStarted }
+  let authorizedEvent = run.events.first { $0.kind == .toolCallAuthorized }
 
   #expect(run.finalAnswer == "approved")
-  #expect(startedEvent?.toolManifest == manifest)
+  #expect(authorizedEvent?.toolManifest == manifest)
+  #expect(run.metrics.toolAuthorizationCount == 1)
 }
 
 @Test func trustedToolExecutionPolicyRejectsChangedToolDefinition() async throws {
@@ -384,6 +395,43 @@ import Foundation
 
     #expect(adapter.name == "current_time")
     #expect(output == "2026-05-30T13:00:00Z")
+  }
+}
+
+@Test func foundationToolAdapterAuthorizesBeforeCallingKarmaTool() async throws {
+  if #available(macOS 26.0, *) {
+    let counter = CallCounter()
+    let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
+      await counter.increment()
+      return "found"
+    }
+    let adapter = try FoundationModelToolAdapter(
+      tool: tool,
+      toolExecutionPolicy: DenyToolExecutionPolicy(deniedToolName: "lookup"),
+      task: "Use lookup"
+    )
+
+    await #expect(throws: PolicyError.denied("lookup")) {
+      _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
+    }
+    #expect(await counter.value == 0)
+  }
+}
+
+@Test func foundationToolAdapterRecordsAuthorizationEvents() async throws {
+  if #available(macOS 26.0, *) {
+    let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
+      "found"
+    }
+    let audit = FoundationModelToolAudit()
+    let adapter = try FoundationModelToolAdapter(tool: tool, task: "Use lookup", audit: audit)
+
+    _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
+    let events = await audit.events()
+
+    #expect(events.map(\.kind) == [.toolCallAuthorized])
+    #expect(events.first?.toolCall?.name == "lookup")
+    #expect(events.first?.toolManifest?.name == "lookup")
   }
 }
 
@@ -587,6 +635,7 @@ import Foundation
   #expect(run.events.map(\.kind) == [
     .runStarted,
     .modelOutput,
+    .toolCallAuthorized,
     .toolCallStarted,
     .toolCallFinished,
     .modelOutput,
@@ -602,12 +651,12 @@ import Foundation
   #expect(run.events[0].trace?.parentSpanID == nil)
   #expect(run.events[1].trace?.spanID == "step.1.model")
   #expect(run.events[1].trace?.parentSpanID == "run")
-  #expect(run.events[2].trace?.spanID == "step.1.model.tool.call_1")
+  #expect(run.events[2].trace?.spanID == "step.1.model.tool.call_1.authorization")
   #expect(run.events[2].trace?.parentSpanID == "step.1.model")
   #expect(run.events[3].trace?.spanID == "step.1.model.tool.call_1")
   #expect(run.events[3].trace?.parentSpanID == "step.1.model")
-  #expect(run.events[5].trace?.spanID == "step.2.model.answer")
-  #expect(run.events[5].trace?.parentSpanID == "step.2.model")
+  #expect(run.events[6].trace?.spanID == "step.2.model.answer")
+  #expect(run.events[6].trace?.parentSpanID == "step.2.model")
   #expect(await observer.events.allSatisfy { $0.trace != nil })
 }
 
@@ -654,6 +703,8 @@ import Foundation
   #expect(metrics.messageCount == 4)
   #expect(metrics.modelOutputCount == 2)
   #expect(metrics.toolCallCount == 1)
+  #expect(metrics.toolAuthorizationCount == 1)
+  #expect(metrics.toolDenialCount == 0)
   #expect(metrics.toolResultCount == 1)
   #expect(metrics.toolFailureCount == 0)
   #expect(metrics.limitedToolOutputCount == 1)
@@ -718,6 +769,8 @@ import Foundation
   #expect(metrics.modelInputWindowedCount == 0)
   #expect(metrics.modelInputNormalizedCount == 0)
   #expect(metrics.toolFailureCount == 0)
+  #expect(metrics.toolAuthorizationCount == 0)
+  #expect(metrics.toolDenialCount == 0)
   #expect(metrics.usage.totalTokens == nil)
 }
 
@@ -1036,7 +1089,13 @@ import Foundation
   }
 
   #expect(agent.memory.messages.contains { $0.role == .tool } == false)
-  #expect(agent.memory.events.map(\.kind) == [.runStarted, .modelOutput, .toolCallStarted, .runInterrupted])
+  #expect(agent.memory.events.map(\.kind) == [
+    .runStarted,
+    .modelOutput,
+    .toolCallAuthorized,
+    .toolCallStarted,
+    .runInterrupted
+  ])
   #expect(agent.memory.events.last?.message == "Tool requested stop.")
 }
 

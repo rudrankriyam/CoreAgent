@@ -69,7 +69,9 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `AgentMemory`: stores messages and action steps.
 - `FoundationModelProvider`: Apple Foundation Models backend.
 - `FoundationModelToolAdapter`: bridges KarmaKit tools into Foundation Models tools.
+- `FoundationModelToolAudit`: records Foundation Models-native tool authorization events.
 - `ToolExecutionPolicy`: authorizes tool calls before execution.
+- `toolCallAuthorized` and `toolCallDenied`: record policy decisions before tool execution.
 - `TrustedToolExecutionPolicy`: only allows tools with approved manifest digests.
 - `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
 - `PromptInjectionShieldValidator`: rejects answers that repeat untrusted tool-output instructions.

@@ -226,6 +226,8 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case runStarted
   case modelOutput
   case modelRetry
+  case toolCallAuthorized
+  case toolCallDenied
   case toolCallStarted
   case toolCallFinished
   case toolCallFailed
@@ -598,6 +600,10 @@ public protocol StreamingModelProvider: ModelProvider {
     tools: [any Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput
+}
+
+public protocol ToolExecutionPolicyConfigurableModelProvider: ModelProvider {
+  func withToolExecutionPolicy(_ policy: any ToolExecutionPolicy) -> any ModelProvider
 }
 
 public struct RetryPolicy: Equatable, Sendable {
@@ -1102,6 +1108,8 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
   public var modelOutputCount: Int
   public var modelRetryCount: Int
   public var toolCallCount: Int
+  public var toolAuthorizationCount: Int
+  public var toolDenialCount: Int
   public var toolResultCount: Int
   public var toolFailureCount: Int
   public var limitedToolOutputCount: Int
@@ -1119,6 +1127,8 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     case eventCount
     case modelOutputCount
     case toolCallCount
+    case toolAuthorizationCount
+    case toolDenialCount
     case toolResultCount
     case toolFailureCount
     case limitedToolOutputCount
@@ -1139,6 +1149,8 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     modelOutputCount: Int,
     modelRetryCount: Int,
     toolCallCount: Int,
+    toolAuthorizationCount: Int = 0,
+    toolDenialCount: Int = 0,
     toolResultCount: Int,
     toolFailureCount: Int = 0,
     limitedToolOutputCount: Int,
@@ -1156,6 +1168,8 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     self.modelOutputCount = modelOutputCount
     self.modelRetryCount = modelRetryCount
     self.toolCallCount = toolCallCount
+    self.toolAuthorizationCount = toolAuthorizationCount
+    self.toolDenialCount = toolDenialCount
     self.toolResultCount = toolResultCount
     self.toolFailureCount = toolFailureCount
     self.limitedToolOutputCount = limitedToolOutputCount
@@ -1176,6 +1190,8 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       modelOutputCount: run.events.filter { $0.kind == .modelOutput }.count,
       modelRetryCount: run.events.filter { $0.kind == .modelRetry }.count,
       toolCallCount: run.events.filter { $0.kind == .toolCallStarted }.count,
+      toolAuthorizationCount: run.events.filter { $0.kind == .toolCallAuthorized }.count,
+      toolDenialCount: run.events.filter { $0.kind == .toolCallDenied }.count,
       toolResultCount: run.events.filter { $0.kind == .toolCallFinished }.count,
       toolFailureCount: run.events.filter { $0.kind == .toolCallFailed }.count,
       limitedToolOutputCount: run.events.filter { $0.kind == .toolOutputLimited }.count,
@@ -1198,6 +1214,8 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       modelOutputCount: try container.decode(Int.self, forKey: .modelOutputCount),
       modelRetryCount: try container.decode(Int.self, forKey: .modelRetryCount),
       toolCallCount: try container.decode(Int.self, forKey: .toolCallCount),
+      toolAuthorizationCount: try container.decodeIfPresent(Int.self, forKey: .toolAuthorizationCount) ?? 0,
+      toolDenialCount: try container.decodeIfPresent(Int.self, forKey: .toolDenialCount) ?? 0,
       toolResultCount: try container.decode(Int.self, forKey: .toolResultCount),
       toolFailureCount: try container.decodeIfPresent(Int.self, forKey: .toolFailureCount) ?? 0,
       limitedToolOutputCount: try container.decode(Int.self, forKey: .limitedToolOutputCount),
@@ -1534,6 +1552,11 @@ private struct AgentTraceContext {
       return "run"
     case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized:
       return modelSpanID(stepNumber: event.stepNumber)
+    case .toolCallAuthorized, .toolCallDenied:
+      if let callID = event.toolCall?.id {
+        return "\(modelSpanID(stepNumber: event.stepNumber)).tool.\(callID).authorization"
+      }
+      return "\(modelSpanID(stepNumber: event.stepNumber)).tool.authorization"
     case .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
       if let callID = event.toolCall?.id {
         return "\(modelSpanID(stepNumber: event.stepNumber)).tool.\(callID)"
@@ -1554,7 +1577,7 @@ private struct AgentTraceContext {
       return nil
     case .modelOutput, .modelRetry, .partialResponse, .modelInputWindowed, .modelInputNormalized:
       return "run"
-    case .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
+    case .toolCallAuthorized, .toolCallDenied, .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
       return modelSpanID(stepNumber: event.stepNumber)
     case .finalAnswerAccepted:
       return modelSpanID(stepNumber: event.stepNumber)
@@ -1620,8 +1643,12 @@ public final class ToolCallingAgent: @unchecked Sendable {
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     memoryStore: (any AgentMemoryStore)? = nil
   ) {
-    self.model = model
     self.systemPrompt = systemPrompt
+    self.model = if let configurableModel = model as? any ToolExecutionPolicyConfigurableModelProvider {
+      configurableModel.withToolExecutionPolicy(toolExecutionPolicy)
+    } else {
+      model
+    }
     self.tools = tools.reduce(into: [String: any Tool]()) { partialResult, tool in
       partialResult[tool.name] = tool
     }
@@ -1949,9 +1976,33 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     let manifest = try ToolManifest(tool: tool)
-    try await toolExecutionPolicy.authorize(
-      .init(call: call, stepNumber: stepNumber, task: task, toolManifest: manifest)
-    )
+    do {
+      try await toolExecutionPolicy.authorize(
+        .init(call: call, stepNumber: stepNumber, task: task, toolManifest: manifest)
+      )
+      await emit(
+        .init(
+          kind: .toolCallAuthorized,
+          stepNumber: stepNumber,
+          message: "Tool call authorized.",
+          toolCall: call,
+          toolManifest: manifest
+        )
+      )
+    } catch {
+      await emit(
+        .init(
+          kind: .toolCallDenied,
+          stepNumber: stepNumber,
+          message: String(describing: error),
+          errorType: String(reflecting: Swift.type(of: error)),
+          errorDescription: String(describing: error),
+          toolCall: call,
+          toolManifest: manifest
+        )
+      )
+      throw error
+    }
     if emitsStartEvent {
       await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call, toolManifest: manifest))
     }

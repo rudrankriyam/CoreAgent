@@ -32,34 +32,45 @@ public struct FoundationModelProvider: StreamingModelProvider {
   public var model: SystemLanguageModel
   public var instructions: String?
   public var options: GenerationOptions
+  public var toolExecutionPolicy: any ToolExecutionPolicy
 
   public init(
     model: SystemLanguageModel = .default,
     instructions: String? = nil,
-    options: GenerationOptions = GenerationOptions()
+    options: GenerationOptions = GenerationOptions(),
+    toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy()
   ) {
     self.model = model
     self.instructions = instructions
     self.options = options
+    self.toolExecutionPolicy = toolExecutionPolicy
   }
 
   public func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
     try validateAvailability()
 
-    let foundationTools = try tools.map { try FoundationModelToolAdapter(tool: $0) }
+    let audit = FoundationModelToolAudit()
+    let prompt = FoundationModelPrompt.makePrompt(messages: messages)
+    let foundationTools = try tools.map {
+      try FoundationModelToolAdapter(
+        tool: $0,
+        toolExecutionPolicy: toolExecutionPolicy,
+        task: prompt,
+        audit: audit
+      )
+    }
     let session = LanguageModelSession(
       model: model,
       tools: foundationTools,
       instructions: instructions
     )
 
-    let prompt = FoundationModelPrompt.makePrompt(messages: messages)
     let inputTokens = try await tokenCount(for: prompt)
     let toolDefinitionTokens = try await tokenCount(for: foundationTools)
     let response = try await session.respond(to: prompt, options: options)
     return .finalAnswer(
       response.content,
-      events: try FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
+      events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
       usage: AgentUsage(
         inputTokens: inputTokens,
         outputTokens: try await tokenCount(for: response.content),
@@ -75,14 +86,22 @@ public struct FoundationModelProvider: StreamingModelProvider {
   ) async throws -> ModelOutput {
     try validateAvailability()
 
-    let foundationTools = try tools.map { try FoundationModelToolAdapter(tool: $0) }
+    let audit = FoundationModelToolAudit()
+    let prompt = FoundationModelPrompt.makePrompt(messages: messages)
+    let foundationTools = try tools.map {
+      try FoundationModelToolAdapter(
+        tool: $0,
+        toolExecutionPolicy: toolExecutionPolicy,
+        task: prompt,
+        audit: audit
+      )
+    }
     let session = LanguageModelSession(
       model: model,
       tools: foundationTools,
       instructions: instructions
     )
 
-    let prompt = FoundationModelPrompt.makePrompt(messages: messages)
     let inputTokens = try await tokenCount(for: prompt)
     let toolDefinitionTokens = try await tokenCount(for: foundationTools)
     var finalContent = ""
@@ -94,7 +113,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
 
     return .finalAnswer(
       finalContent,
-      events: try FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
+      events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
       usage: AgentUsage(
         inputTokens: inputTokens,
         outputTokens: try await tokenCount(for: finalContent),
@@ -155,6 +174,34 @@ public struct FoundationModelProvider: StreamingModelProvider {
     }
 
     return nil
+  }
+}
+
+@available(iOS 26.0, macOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+extension FoundationModelProvider: ToolExecutionPolicyConfigurableModelProvider {
+  public func withToolExecutionPolicy(_ policy: any ToolExecutionPolicy) -> any ModelProvider {
+    FoundationModelProvider(
+      model: model,
+      instructions: instructions,
+      options: options,
+      toolExecutionPolicy: policy
+    )
+  }
+}
+
+public actor FoundationModelToolAudit {
+  private var recordedEvents: [AgentEvent] = []
+
+  public init() {}
+
+  public func record(_ event: AgentEvent) {
+    recordedEvents.append(event)
+  }
+
+  public func events() -> [AgentEvent] {
+    recordedEvents
   }
 }
 
@@ -240,10 +287,21 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
   public typealias Output = String
 
   private let tool: any KarmaKit.Tool
+  private let toolExecutionPolicy: any ToolExecutionPolicy
+  private let task: String
+  private let audit: FoundationModelToolAudit?
   public let parameters: GenerationSchema
 
-  public init(tool: any KarmaKit.Tool) throws {
+  public init(
+    tool: any KarmaKit.Tool,
+    toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy(),
+    task: String = "",
+    audit: FoundationModelToolAudit? = nil
+  ) throws {
     self.tool = tool
+    self.toolExecutionPolicy = toolExecutionPolicy
+    self.task = task
+    self.audit = audit
     self.parameters = try FoundationModelSchemaAdapter.makeToolParameters(for: tool)
   }
 
@@ -253,6 +311,33 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
   @concurrent
   public func call(arguments: GeneratedContent) async throws -> String {
     let decodedArguments = try Self.decode(arguments, for: tool)
+    let call = ToolCall(name: tool.name, arguments: decodedArguments)
+    let manifest = try ToolManifest(tool: tool)
+    do {
+      try await toolExecutionPolicy.authorize(
+        ToolExecutionContext(call: call, stepNumber: 0, task: task, toolManifest: manifest)
+      )
+      await audit?.record(
+        AgentEvent(
+          kind: .toolCallAuthorized,
+          message: "Tool call authorized.",
+          toolCall: call,
+          toolManifest: manifest
+        )
+      )
+    } catch {
+      await audit?.record(
+        AgentEvent(
+          kind: .toolCallDenied,
+          message: String(describing: error),
+          errorType: String(reflecting: Swift.type(of: error)),
+          errorDescription: String(describing: error),
+          toolCall: call,
+          toolManifest: manifest
+        )
+      )
+      throw error
+    }
     return try await tool.call(arguments: decodedArguments)
   }
 
