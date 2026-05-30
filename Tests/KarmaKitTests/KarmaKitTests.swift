@@ -1183,6 +1183,104 @@ import Foundation
   #expect(decoded == configuration)
 }
 
+@Test func agentConfigurationRoundTripsContextProviderManifests() async throws {
+  let provider = StaticAgentContextProvider(
+    name: "project_context",
+    description: "Project facts.",
+    messages: [
+      AgentMessage(role: .system, content: "KarmaKit uses Foundation Models.")
+    ]
+  )
+  let sourceAgent = ToolCallingAgent(
+    tools: [],
+    model: CapturingModel(outputs: [.finalAnswer("done")]),
+    contextProviders: [provider]
+  )
+  let configuration = try sourceAgent.configuration()
+  let data = try JSONEncoder().encode(configuration)
+  let decoded = try JSONDecoder().decode(AgentConfiguration.self, from: data)
+  let model = CapturingModel(outputs: [.finalAnswer("done")])
+  let rebuiltAgent = try ToolCallingAgent(
+    configuration: decoded,
+    tools: [],
+    model: model,
+    contextProviders: [provider]
+  )
+
+  let run = try await rebuiltAgent.run("Continue")
+  let capturedMessages = try #require(await model.capturedMessages.first)
+
+  #expect(decoded == configuration)
+  #expect(decoded.contextProviderManifests.map(\.name) == ["project_context"])
+  #expect(run.finalAnswer == "done")
+  #expect(capturedMessages.first?.content.contains("KarmaKit uses Foundation Models.") == true)
+  #expect(run.events.contains { $0.kind == .contextProviderAuthorized })
+}
+
+@Test func agentConfigurationRejectsRuntimeContextProviderDrift() throws {
+  let approvedProvider = StaticAgentContextProvider(
+    name: "project_context",
+    description: "Approved context.",
+    messages: [AgentMessage(role: .system, content: "approved")]
+  )
+  let changedProvider = StaticAgentContextProvider(
+    name: "project_context",
+    description: "Changed context.",
+    messages: [AgentMessage(role: .system, content: "changed")]
+  )
+  let configuration = AgentConfiguration(
+    systemPrompt: "System",
+    maxSteps: 3,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: .none,
+    toolManifests: [],
+    contextProviderManifests: [try AgentContextProviderManifest(provider: approvedProvider)]
+  )
+
+  #expect(throws: KarmaError.configurationMismatch(
+    "Configured context providers [project_context] do not match runtime context providers [project_context]."
+  )) {
+    try configuration.verifyContextProviders([changedProvider])
+  }
+}
+
+@Test func rebuiltAgentEnforcesConfiguredContextProviderTrustAtRuntime() async throws {
+  let provider = MutableAgentContextProvider(
+    name: "project_context",
+    description: "Approved context.",
+    messages: [AgentMessage(role: .system, content: "approved")]
+  )
+  let configuration = AgentConfiguration(
+    systemPrompt: "System",
+    maxSteps: 2,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: .none,
+    toolManifests: [],
+    contextProviderManifests: [try AgentContextProviderManifest(provider: provider)]
+  )
+  let model = CapturingModel(outputs: [.finalAnswer("unexpected")])
+  let agent = try ToolCallingAgent(
+    configuration: configuration,
+    tools: [],
+    model: model,
+    contextProviders: [provider]
+  )
+  provider.description = "Changed context."
+  let changedManifest = try AgentContextProviderManifest(provider: provider)
+
+  await #expect(throws: KarmaError.untrustedContextProvider(name: "project_context", digest: changedManifest.digest)) {
+    _ = try await agent.run("Continue")
+  }
+
+  #expect(agent.contextProviderExecutionPolicy is TrustedAgentContextProviderExecutionPolicy)
+  #expect(await model.capturedMessages.isEmpty)
+  #expect(agent.memory.events.contains { $0.kind == .contextProviderDenied })
+}
+
 @Test func rebuiltAgentEnforcesConfiguredToolTrustAtRuntime() async throws {
   let tool = MutableTool(name: "lookup", description: "Looks up public data.", inputs: [:], output: "changed")
   let configuration = AgentConfiguration(
@@ -1255,6 +1353,9 @@ import Foundation
           "query": ToolInput(type: .string, description: "Search with client_secret=input-secret.")
         ]
       )
+    ],
+    contextProviderManifests: [
+      try AgentContextProviderManifest(name: "api_key=provider-secret", description: "Reads api_key=context-secret.")
     ]
   )
 
@@ -1265,6 +1366,8 @@ import Foundation
   #expect(!json.contains("system-secret"))
   #expect(!json.contains("tool-secret"))
   #expect(!json.contains("input-secret"))
+  #expect(!json.contains("provider-secret"))
+  #expect(!json.contains("context-secret"))
   #expect(json.contains("[REDACTED]"))
 }
 
@@ -1322,9 +1425,15 @@ import Foundation
   let tool = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
     "ok"
   }
+  let provider = StaticAgentContextProvider(
+    name: "project_context",
+    description: "Project facts.",
+    messages: [AgentMessage(role: .system, content: "Fact")]
+  )
   let agent = ToolCallingAgent(
     tools: [tool],
     model: ScriptedModel(outputs: []),
+    contextProviders: [provider],
     toolCallExecutionMode: .parallel
   )
 
@@ -1339,8 +1448,10 @@ import Foundation
 
   #expect(AgentDiscoveryDocument.wellKnownPath == "/.well-known/agent.json")
   #expect(document.configuration.toolManifests.map(\.name) == ["lookup"])
+  #expect(document.configuration.contextProviderManifests.map(\.name) == ["project_context"])
   #expect(document.capabilities.contains("tool-calling"))
   #expect(document.capabilities.contains("parallel-tool-calls"))
+  #expect(document.capabilities.contains("context-provider-manifest-digests"))
   #expect(document.capabilities.contains("trace-export"))
   #expect(document.tags == ["swift"])
   #expect(document.endpoints == [AgentEndpoint(name: "cli", transport: "stdio")])
@@ -1369,6 +1480,7 @@ import Foundation
   #expect(configuration.toolArgumentErrorRecoveryMode == .recover)
   #expect(configuration.finalAnswerRecoveryMode == .recover)
   #expect(configuration.completionMode == .finalAnswer)
+  #expect(configuration.contextProviderManifests.isEmpty)
 }
 
 @Test func agentConfigurationRejectsRuntimeToolDrift() throws {
@@ -3779,6 +3891,22 @@ private struct ThrowingAgentContextProvider: AgentContextProvider {
 
   func contextMessages(_ context: AgentContextProviderContext) async throws -> [AgentMessage] {
     throw ContextProviderTestError.failed
+  }
+}
+
+private final class MutableAgentContextProvider: AgentContextProviderDescribing, @unchecked Sendable {
+  var name: String
+  var description: String
+  var messages: [AgentMessage]
+
+  init(name: String, description: String, messages: [AgentMessage]) {
+    self.name = name
+    self.description = description
+    self.messages = messages
+  }
+
+  func contextMessages(_ context: AgentContextProviderContext) async throws -> [AgentMessage] {
+    messages
   }
 }
 

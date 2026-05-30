@@ -70,7 +70,7 @@ swift run karma --demo-tools --allow-url-host example.com "Fetch https://example
 - `ModelProvider`: abstraction for local, hosted, or Apple-provided models.
 - `ToolCallingAgent`: minimal loop that asks a model for tool calls or a final answer.
 - `ToolCallingAgent` serializes runs per instance so shared agent memory stays consistent.
-- `AgentConfiguration`: persists safe runtime settings and approved tool manifests.
+- `AgentConfiguration`: persists safe runtime settings plus approved tool and context provider manifests.
 - `AgentDiscoveryDocument`: exports redacted agent metadata for discovery files such as `/.well-known/agent.json`.
 - `ToolCallExecutionMode`: runs multiple tool calls sequentially or in parallel.
 - `ToolArgumentErrorRecoveryMode`: turns invalid tool arguments into retryable tool feedback, with opt-in fail-fast behavior.

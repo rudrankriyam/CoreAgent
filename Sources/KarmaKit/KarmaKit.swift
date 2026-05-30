@@ -1411,6 +1411,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
   public var finalAnswerRecoveryMode: FinalAnswerRecoveryMode
   public var completionMode: AgentCompletionMode
   public var toolManifests: [ToolManifest]
+  public var contextProviderManifests: [AgentContextProviderManifest]
 
   private enum CodingKeys: String, CodingKey {
     case version
@@ -1425,6 +1426,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     case finalAnswerRecoveryMode
     case completionMode
     case toolManifests
+    case contextProviderManifests
   }
 
   public init(
@@ -1439,7 +1441,8 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
     finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
     completionMode: AgentCompletionMode = .finalAnswer,
-    toolManifests: [ToolManifest]
+    toolManifests: [ToolManifest],
+    contextProviderManifests: [AgentContextProviderManifest] = []
   ) {
     self.version = version
     self.systemPrompt = systemPrompt
@@ -1453,6 +1456,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     self.finalAnswerRecoveryMode = finalAnswerRecoveryMode
     self.completionMode = completionMode
     self.toolManifests = toolManifests
+    self.contextProviderManifests = contextProviderManifests
   }
 
   public init(from decoder: Decoder) throws {
@@ -1476,7 +1480,11 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
         forKey: .finalAnswerRecoveryMode
       ) ?? .recover,
       completionMode: try container.decodeIfPresent(AgentCompletionMode.self, forKey: .completionMode) ?? .finalAnswer,
-      toolManifests: try container.decode([ToolManifest].self, forKey: .toolManifests)
+      toolManifests: try container.decode([ToolManifest].self, forKey: .toolManifests),
+      contextProviderManifests: try container.decodeIfPresent(
+        [AgentContextProviderManifest].self,
+        forKey: .contextProviderManifests
+      ) ?? []
     )
   }
 
@@ -1494,6 +1502,20 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     }
   }
 
+  public func verifyContextProviders(_ providers: [any AgentContextProvider]) throws {
+    let runtimeManifests = try providers.map(AgentContextProviderManifest.init(provider:))
+    let configuredDigests = Set(contextProviderManifests.map(\.digest))
+    let runtimeDigests = Set(runtimeManifests.map(\.digest))
+
+    guard configuredDigests == runtimeDigests else {
+      let configuredNames = contextProviderManifests.map(\.name).sorted().joined(separator: ",")
+      let runtimeNames = runtimeManifests.map(\.name).sorted().joined(separator: ",")
+      throw KarmaError.configurationMismatch(
+        "Configured context providers [\(configuredNames)] do not match runtime context providers [\(runtimeNames)]."
+      )
+    }
+  }
+
   public func redacted(using policy: AgentRedactionPolicy = .standard) throws -> AgentConfiguration {
     try AgentConfiguration(
       version: version,
@@ -1507,7 +1529,8 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
       completionMode: completionMode,
-      toolManifests: toolManifests.map { try $0.redacted(using: policy) }
+      toolManifests: toolManifests.map { try $0.redacted(using: policy) },
+      contextProviderManifests: contextProviderManifests.map { try $0.redacted(using: policy) }
     )
   }
 }
@@ -1598,6 +1621,9 @@ public struct AgentDiscoveryDocument: Codable, Equatable, Sendable {
     }
     if !configuration.toolManifests.isEmpty {
       capabilities.append("tool-manifest-digests")
+    }
+    if !configuration.contextProviderManifests.isEmpty {
+      capabilities.append("context-provider-manifest-digests")
     }
 
     return capabilities
@@ -2718,13 +2744,20 @@ public final class ToolCallingAgent: @unchecked Sendable {
     ],
     observers: [any AgentObserver] = [],
     contextProviders: [any AgentContextProvider] = [],
-    contextProviderExecutionPolicy: any AgentContextProviderExecutionPolicy = AllowAllAgentContextProviderExecutionPolicy(),
+    contextProviderExecutionPolicy: (any AgentContextProviderExecutionPolicy)? = nil,
     memoryStore: (any AgentMemoryStore)? = nil,
     conversationCompactor: any ConversationCompactor = ExcerptConversationCompactor()
   ) throws {
     try configuration.verifyTools(tools)
+    try configuration.verifyContextProviders(contextProviders)
     let resolvedToolExecutionPolicy: any ToolExecutionPolicy = toolExecutionPolicy
       ?? TrustedToolExecutionPolicy(approvedManifests: configuration.toolManifests)
+    let resolvedContextProviderExecutionPolicy: any AgentContextProviderExecutionPolicy = contextProviderExecutionPolicy
+      ?? (
+        configuration.contextProviderManifests.isEmpty
+          ? AllowAllAgentContextProviderExecutionPolicy()
+          : TrustedAgentContextProviderExecutionPolicy(approvedManifests: configuration.contextProviderManifests)
+      )
     self.init(
       tools: tools,
       model: model,
@@ -2734,7 +2767,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       finalAnswerValidators: finalAnswerValidators,
       observers: observers,
       contextProviders: contextProviders,
-      contextProviderExecutionPolicy: contextProviderExecutionPolicy,
+      contextProviderExecutionPolicy: resolvedContextProviderExecutionPolicy,
       resetsMemoryBeforeRun: configuration.resetsMemoryBeforeRun,
       retryPolicy: configuration.retryPolicy,
       timeouts: configuration.timeouts,
@@ -2817,7 +2850,10 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
       completionMode: completionMode,
-      toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
+      toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name },
+      contextProviderManifests: try contextProviders
+        .map(AgentContextProviderManifest.init(provider:))
+        .sorted { $0.name < $1.name }
     )
   }
 
