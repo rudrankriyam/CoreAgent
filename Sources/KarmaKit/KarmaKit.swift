@@ -169,14 +169,16 @@ public struct ToolExecutionContext: Equatable, Sendable {
 public struct ToolResult: Codable, Equatable, Sendable {
   public var callID: String
   public var output: String
+  public var managedRun: ManagedAgentRunReport?
 
-  public init(callID: String, output: String) {
+  public init(callID: String, output: String, managedRun: ManagedAgentRunReport? = nil) {
     self.callID = callID
     self.output = output
+    self.managedRun = managedRun
   }
 
   public func redacted(using policy: AgentRedactionPolicy = .standard) -> ToolResult {
-    ToolResult(callID: callID, output: policy.redact(output))
+    ToolResult(callID: callID, output: policy.redact(output), managedRun: managedRun?.redacted(using: policy))
   }
 }
 
@@ -299,6 +301,20 @@ public struct AgentEvent: Codable, Equatable, Sendable {
 
 public protocol AgentObserver: Sendable {
   func observe(_ event: AgentEvent) async
+}
+
+public struct ToolExecutionReport: Sendable {
+  public var output: String
+  public var managedRun: ManagedAgentRunReport?
+
+  public init(output: String, managedRun: ManagedAgentRunReport? = nil) {
+    self.output = output
+    self.managedRun = managedRun
+  }
+}
+
+public protocol ReportingTool: Tool {
+  func callWithReport(arguments: [String: String]) async throws -> ToolExecutionReport
 }
 
 public actor AgentCancellation {
@@ -438,7 +454,7 @@ public struct ClosureTool: Tool {
   }
 }
 
-public struct ManagedAgentTool: Tool {
+public struct ManagedAgentTool: ReportingTool {
   public var name: String
   public var description: String
   public var inputs: [String: ToolInput]
@@ -463,12 +479,16 @@ public struct ManagedAgentTool: Tool {
   }
 
   public func call(arguments: [String: String]) async throws -> String {
+    try await callWithReport(arguments: arguments).output
+  }
+
+  public func callWithReport(arguments: [String: String]) async throws -> ToolExecutionReport {
     guard let task = arguments[inputs.keys.first ?? "task"] else {
       throw KarmaError.invalidToolArguments(tool: name, expected: Array(inputs.keys).sorted())
     }
 
     let run = try await agent.run(task, cancellation: cancellation)
-    return run.finalAnswer
+    return ToolExecutionReport(output: run.finalAnswer, managedRun: ManagedAgentRunReport(run: run))
   }
 }
 
@@ -966,6 +986,43 @@ public struct AgentRun: Codable, Equatable, Sendable {
       events: memory.events,
       startedAt: startedAt,
       endedAt: endedAt
+    )
+  }
+}
+
+public struct ManagedAgentRunReport: Codable, Equatable, Sendable {
+  public var finalAnswer: String
+  public var metrics: AgentRunMetrics
+  public var messages: [AgentMessage]
+  public var events: [AgentEvent]
+
+  public init(
+    finalAnswer: String,
+    metrics: AgentRunMetrics,
+    messages: [AgentMessage],
+    events: [AgentEvent]
+  ) {
+    self.finalAnswer = finalAnswer
+    self.metrics = metrics
+    self.messages = messages
+    self.events = events
+  }
+
+  public init(run: AgentRun) {
+    self.init(
+      finalAnswer: run.finalAnswer,
+      metrics: run.metrics,
+      messages: run.messages,
+      events: run.events
+    )
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> ManagedAgentRunReport {
+    ManagedAgentRunReport(
+      finalAnswer: policy.redact(finalAnswer),
+      metrics: metrics,
+      messages: messages.map { $0.redacted(using: policy) },
+      events: events.map { $0.redacted(using: policy) }
     )
   }
 }
@@ -1835,10 +1892,14 @@ public final class ToolCallingAgent: @unchecked Sendable {
   ) async throws -> ToolExecutionOutput {
     do {
       try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
-      let rawOutput = try await callTool(prepared.tool, arguments: prepared.call.arguments)
+      let report = try await callTool(prepared.tool, arguments: prepared.call.arguments)
       try await checkToolInterruption(cancellation, stepNumber: prepared.stepNumber, emitsEvent: emitsInterruption)
-      let limitedOutput = limitToolOutput(rawOutput)
-      let result = ToolResult(callID: prepared.call.id, output: limitedOutput.output)
+      let limitedOutput = limitToolOutput(report.output)
+      let result = ToolResult(
+        callID: prepared.call.id,
+        output: limitedOutput.output,
+        managedRun: report.managedRun
+      )
       var events: [AgentEvent] = []
       if let message = limitedOutput.message {
         events.append(
@@ -2018,13 +2079,20 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
   }
 
-  private func callTool(_ tool: any Tool, arguments: [String: String]) async throws -> String {
+  private func callTool(_ tool: any Tool, arguments: [String: String]) async throws -> ToolExecutionReport {
+    let work: @Sendable () async throws -> ToolExecutionReport = {
+      if let reportingTool = tool as? any ReportingTool {
+        return try await reportingTool.callWithReport(arguments: arguments)
+      }
+      return ToolExecutionReport(output: try await tool.call(arguments: arguments))
+    }
+
     guard let timeout = timeouts.toolCall else {
-      return try await tool.call(arguments: arguments)
+      return try await work()
     }
 
     return try await withTimeout(timeout, operation: "tool.\(tool.name)") {
-      try await tool.call(arguments: arguments)
+      try await work()
     }
   }
 

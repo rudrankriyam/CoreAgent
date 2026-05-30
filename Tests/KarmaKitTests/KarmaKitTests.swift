@@ -900,6 +900,40 @@ import Foundation
   #expect(parentAgent.memory.steps.first?.toolResults.first?.output == "child handled it")
 }
 
+@Test func managedAgentToolReportsChildRunInParentToolResult() async throws {
+  let childTool = ClosureTool(name: "child_lookup", description: "Looks up child data.", inputs: [:]) { _ in
+    "child data"
+  }
+  let childAgent = ToolCallingAgent(
+    tools: [childTool],
+    model: ScriptedModel(outputs: [
+      .toolCalls([ToolCall(id: "child_call", name: "child_lookup")]),
+      .finalAnswer("child handled it")
+    ])
+  )
+  let managedTool = ManagedAgentTool(
+    name: "delegate_to_child",
+    description: "Delegates work to a child agent.",
+    agent: childAgent
+  )
+  let parentModel = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "parent_call", name: "delegate_to_child", arguments: ["task": "Handle this"])]),
+    .finalAnswer("parent handled it")
+  ])
+  let parentAgent = ToolCallingAgent(tools: [managedTool], model: parentModel)
+
+  let run = try await parentAgent.run("Delegate this")
+  let result = try #require(run.steps.first?.toolResults.first)
+  let report = try #require(result.managedRun)
+
+  #expect(result.output == "child handled it")
+  #expect(report.finalAnswer == "child handled it")
+  #expect(report.metrics.stepCount == 2)
+  #expect(report.metrics.toolCallCount == 1)
+  #expect(report.events.contains { $0.toolCall?.id == "child_call" })
+  #expect(report.events.allSatisfy { $0.trace != nil })
+}
+
 @Test func managedAgentToolPropagatesChildAgentFailure() async throws {
   let childAgent = ToolCallingAgent(
     tools: [],
@@ -1456,6 +1490,58 @@ import Foundation
   #expect(!json.contains("result-token"))
   #expect(json.contains("[REDACTED]"))
   #expect(json.contains("safe"))
+}
+
+@Test func agentTraceExporterRedactsManagedRunReports() throws {
+  let run = AgentRun(
+    finalAnswer: "done",
+    steps: [
+      ActionStep(
+        stepNumber: 1,
+        modelOutput: .toolCalls([ToolCall(id: "call_1", name: "delegate")]),
+        toolResults: [
+          ToolResult(
+            callID: "call_1",
+            output: "authorization: Bearer parent-token",
+            managedRun: ManagedAgentRunReport(
+              finalAnswer: "token=child-final-secret",
+              metrics: AgentRunMetrics(
+                stepCount: 1,
+                messageCount: 1,
+                eventCount: 1,
+                modelOutputCount: 1,
+                modelRetryCount: 0,
+                toolCallCount: 0,
+                toolResultCount: 0,
+                limitedToolOutputCount: 0,
+                partialResponseCount: 0,
+                isInterrupted: false,
+                isFailed: false,
+                durationSeconds: nil
+              ),
+              messages: [
+                AgentMessage(role: .user, content: "api_key=child-message-secret")
+              ],
+              events: [
+                AgentEvent(kind: .modelOutput, message: "client_secret=child-event-secret")
+              ]
+            )
+          )
+        ]
+      )
+    ],
+    messages: [],
+    events: []
+  )
+
+  let data = try AgentTraceExporter().data(for: run, createdAt: Date(timeIntervalSince1970: 0))
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(!json.contains("parent-token"))
+  #expect(!json.contains("child-final-secret"))
+  #expect(!json.contains("child-message-secret"))
+  #expect(!json.contains("child-event-secret"))
+  #expect(json.contains("[REDACTED]"))
 }
 
 @Test func agentTraceExporterCanKeepSensitiveFieldsWhenConfigured() throws {
