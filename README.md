@@ -21,7 +21,7 @@ The name "Karma" comes from the Sanskrit word कर्म (karma), which means 
 import KarmaKit
 import KarmaKitFoundationModels
 
-if #available(macOS 26.0, iOS 26.0, *) {
+if #available(iOS 26.0, *) {
   let provider = FoundationModelProvider()
   let agent = ToolCallingAgent(tools: [], model: provider)
   let run = try await agent.run("Explain tool calling in one sentence.")
@@ -87,6 +87,7 @@ swift run karma --demo-tools --allow-url-host example.com "Fetch https://example
 - `toolCallAuthorized` and `toolCallDenied`: record policy decisions before tool execution.
 - `TrustedToolExecutionPolicy`: only allows tools with approved manifest digests.
 - `TrustedExternalToolExecutionPolicy`: only allows external tools with approved manifests and trust identities.
+- `ApprovalRequiredToolExecutionPolicy`: routes selected tool calls through an app or CLI approval provider.
 - `CompositeToolExecutionPolicy` and `ToolNameAllowlistExecutionPolicy`: stack governance checks before any tool runs.
 - `ActionCompletionTool`: lets action-only agents mark work complete after tool-side state has been updated.
 - `DirectReturnTool`: lets an authoritative tool result complete the run without another model turn.

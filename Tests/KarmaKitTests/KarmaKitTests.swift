@@ -1089,6 +1089,95 @@ import Foundation
   #expect(run.metrics.toolAuthorizationCount == 1)
 }
 
+@Test func approvalRequiredToolExecutionPolicyAllowsApprovedTool() async throws {
+  let approvalRequests = ApprovalRequestRecorder()
+  let tool = ClosureTool(name: "send_email", description: "Sends an email.", inputs: [:]) { _ in
+    "sent"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "send_email")]),
+    .finalAnswer("sent")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    toolExecutionPolicy: ApprovalRequiredToolExecutionPolicy(
+      provider: ClosureToolApprovalProvider { context in
+        await approvalRequests.record(context)
+        return .approved(reason: "User confirmed.")
+      }
+    )
+  )
+
+  let run = try await agent.run("Send the email")
+  let request = try #require(await approvalRequests.contexts.first)
+
+  #expect(run.finalAnswer == "sent")
+  #expect(request.call.name == "send_email")
+  #expect(request.task == "Send the email")
+  #expect(request.stepNumber == 1)
+  #expect(request.toolManifest?.name == "send_email")
+  #expect(run.metrics.toolAuthorizationCount == 1)
+}
+
+@Test func approvalRequiredToolExecutionPolicyDeniesBeforeToolRuns() async throws {
+  let counter = CallCounter()
+  let approvalRequests = ApprovalRequestRecorder()
+  let tool = ClosureTool(name: "delete_record", description: "Deletes a record.", inputs: [:]) { _ in
+    await counter.increment()
+    return "deleted"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "delete_record")])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    toolExecutionPolicy: ApprovalRequiredToolExecutionPolicy(
+      provider: ClosureToolApprovalProvider { context in
+        await approvalRequests.record(context)
+        return .denied(reason: "User declined.")
+      }
+    )
+  )
+
+  await #expect(throws: KarmaError.toolDenied(name: "delete_record", reason: "User declined.")) {
+    _ = try await agent.run("Delete the record")
+  }
+
+  #expect(await approvalRequests.contexts.count == 1)
+  #expect(await counter.value == 0)
+  #expect(agent.memory.events.contains { $0.kind == .toolCallDenied && $0.toolCall?.name == "delete_record" })
+}
+
+@Test func approvalRequiredToolExecutionPolicyCanScopeToolNames() async throws {
+  let approvalRequests = ApprovalRequestRecorder()
+  let lookup = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
+    "found"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "lookup")]),
+    .finalAnswer("found")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [lookup],
+    model: model,
+    toolExecutionPolicy: ApprovalRequiredToolExecutionPolicy(
+      requiredToolNames: ["delete_record"],
+      provider: ClosureToolApprovalProvider { context in
+        await approvalRequests.record(context)
+        return .denied(reason: "Should not be requested.")
+      }
+    )
+  )
+
+  let run = try await agent.run("Use lookup")
+
+  #expect(run.finalAnswer == "found")
+  #expect(await approvalRequests.contexts.isEmpty)
+  #expect(run.metrics.toolAuthorizationCount == 1)
+}
+
 @Test func toolNameAllowlistExecutionPolicyDeniesUnexpectedToolBeforeExecution() async throws {
   let counter = CallCounter()
   let tool = ClosureTool(name: "delete_file", description: "Deletes a file.", inputs: [:]) { _ in
@@ -3783,6 +3872,14 @@ private actor CallCounter {
 
   func increment() {
     value += 1
+  }
+}
+
+private actor ApprovalRequestRecorder {
+  private(set) var contexts: [ToolExecutionContext] = []
+
+  func record(_ context: ToolExecutionContext) {
+    contexts.append(context)
   }
 }
 

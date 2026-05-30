@@ -576,6 +576,27 @@ public protocol ToolExecutionPolicy: Sendable {
   func authorize(_ context: ToolExecutionContext) async throws
 }
 
+public enum ToolApprovalDecision: Equatable, Sendable {
+  case approved(reason: String? = nil)
+  case denied(reason: String)
+}
+
+public protocol ToolApprovalProvider: Sendable {
+  func approval(for context: ToolExecutionContext) async throws -> ToolApprovalDecision
+}
+
+public struct ClosureToolApprovalProvider: ToolApprovalProvider {
+  private let handler: @Sendable (ToolExecutionContext) async throws -> ToolApprovalDecision
+
+  public init(_ handler: @escaping @Sendable (ToolExecutionContext) async throws -> ToolApprovalDecision) {
+    self.handler = handler
+  }
+
+  public func approval(for context: ToolExecutionContext) async throws -> ToolApprovalDecision {
+    try await handler(context)
+  }
+}
+
 public struct AllowAllToolExecutionPolicy: ToolExecutionPolicy {
   public init() {}
 
@@ -606,6 +627,29 @@ public struct ToolNameAllowlistExecutionPolicy: ToolExecutionPolicy {
   public func authorize(_ context: ToolExecutionContext) async throws {
     guard allowedToolNames.contains(context.call.name) else {
       throw KarmaError.toolDenied(name: context.call.name, reason: "Tool name is not allowed.")
+    }
+  }
+}
+
+public struct ApprovalRequiredToolExecutionPolicy: ToolExecutionPolicy {
+  public var requiredToolNames: Set<String>?
+  public var provider: any ToolApprovalProvider
+
+  public init(requiredToolNames: Set<String>? = nil, provider: any ToolApprovalProvider) {
+    self.requiredToolNames = requiredToolNames
+    self.provider = provider
+  }
+
+  public func authorize(_ context: ToolExecutionContext) async throws {
+    guard requiredToolNames?.contains(context.call.name) ?? true else {
+      return
+    }
+
+    switch try await provider.approval(for: context) {
+    case .approved:
+      return
+    case .denied(let reason):
+      throw KarmaError.toolDenied(name: context.call.name, reason: reason)
     }
   }
 }
