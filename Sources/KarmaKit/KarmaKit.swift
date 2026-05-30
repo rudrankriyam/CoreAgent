@@ -2124,9 +2124,12 @@ public final class ToolCallingAgent: @unchecked Sendable {
           outputs.append(output)
         }
       } catch let failure as ToolExecutionFailure {
-        return outputs + [
-          ToolExecutionOutput(index: failure.index, result: nil, events: [failure.event], failure: failure.underlyingError)
-        ]
+        group.cancelAll()
+        return (
+          outputs + [
+            ToolExecutionOutput(index: failure.index, result: nil, events: [failure.event], failure: failure.underlyingError)
+          ]
+        ).sorted { $0.index < $1.index }
       }
       return outputs.sorted { $0.index < $1.index }
     }

@@ -104,6 +104,48 @@ import Foundation
   #expect(agent.snapshotRun().metrics.toolDenialCount == 1)
 }
 
+@Test func parallelToolCallsCancelSiblingsAfterFailure() async throws {
+  let probe = CancellationProbe()
+  let slowTool = ClosureTool(name: "slow", description: "Sleeps until cancelled.", inputs: [:]) { _ in
+    await probe.started()
+    do {
+      try await Task.sleep(for: .seconds(5))
+      await probe.completed()
+      return "late"
+    } catch {
+      await probe.cancelled()
+      throw error
+    }
+  }
+  let failingTool = ClosureTool(name: "failing", description: "Fails quickly.", inputs: [:]) { _ in
+    throw ToolFailureError.offline
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "slow_call", name: "slow"),
+      ToolCall(id: "failing_call", name: "failing")
+    ])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [slowTool, failingTool],
+    model: model,
+    toolCallExecutionMode: .parallel
+  )
+
+  let startedAt = Date()
+  await #expect(throws: ToolFailureError.offline) {
+    _ = try await agent.run("Run parallel tools")
+  }
+  let duration = Date().timeIntervalSince(startedAt)
+
+  #expect(duration < 2)
+  #expect(await probe.didStart)
+  #expect(await probe.wasCancelled)
+  #expect(await !probe.didComplete)
+  let failedEvent = try #require(agent.memory.events.first { $0.kind == .toolCallFailed })
+  #expect(failedEvent.toolCall?.id == "failing_call")
+}
+
 @Test func closureToolValidatesRequiredArguments() async throws {
   let tool = ClosureTool(
     name: "echo",
@@ -2320,6 +2362,24 @@ private actor ParallelProbe {
 
   func finished() {
     running -= 1
+  }
+}
+
+private actor CancellationProbe {
+  private(set) var didStart = false
+  private(set) var wasCancelled = false
+  private(set) var didComplete = false
+
+  func started() {
+    didStart = true
+  }
+
+  func cancelled() {
+    wasCancelled = true
+  }
+
+  func completed() {
+    didComplete = true
   }
 }
 
