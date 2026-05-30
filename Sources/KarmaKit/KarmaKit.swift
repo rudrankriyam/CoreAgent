@@ -30,6 +30,10 @@ public struct AgentMessage: Codable, Equatable, Sendable {
     self.content = content
     self.toolCallID = toolCallID
   }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> AgentMessage {
+    AgentMessage(role: role, content: policy.redact(content), toolCallID: toolCallID)
+  }
 }
 
 public struct ToolInput: Codable, Equatable, Sendable {
@@ -106,6 +110,10 @@ public struct ToolCall: Codable, Equatable, Sendable {
     self.name = name
     self.arguments = arguments
   }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> ToolCall {
+    ToolCall(id: id, name: name, arguments: policy.redact(arguments: arguments))
+  }
 }
 
 public struct ToolManifest: Codable, Equatable, Sendable {
@@ -163,6 +171,10 @@ public struct ToolResult: Codable, Equatable, Sendable {
     self.callID = callID
     self.output = output
   }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> ToolResult {
+    ToolResult(callID: callID, output: policy.redact(output))
+  }
 }
 
 public enum AgentEventKind: String, Codable, Equatable, Sendable {
@@ -198,6 +210,17 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     self.toolCall = toolCall
     self.toolResult = toolResult
     self.toolManifest = toolManifest
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> AgentEvent {
+    AgentEvent(
+      kind: kind,
+      stepNumber: stepNumber,
+      message: message.map(policy.redact),
+      toolCall: toolCall?.redacted(using: policy),
+      toolResult: toolResult?.redacted(using: policy),
+      toolManifest: toolManifest
+    )
   }
 }
 
@@ -376,6 +399,18 @@ public enum ModelOutput: Codable, Equatable, Sendable {
       try container.encode(events, forKey: .events)
     }
   }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> ModelOutput {
+    switch self {
+    case .toolCalls(let calls):
+      return .toolCalls(calls.map { $0.redacted(using: policy) })
+    case .finalAnswer(let answer, let events):
+      return .finalAnswer(
+        policy.redact(answer),
+        events: events.map { $0.redacted(using: policy) }
+      )
+    }
+  }
 }
 
 public protocol ModelProvider: Sendable {
@@ -428,6 +463,15 @@ public struct ActionStep: Codable, Equatable, Sendable {
     self.modelOutput = modelOutput
     self.toolResults = toolResults
     self.isFinalAnswer = isFinalAnswer
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> ActionStep {
+    ActionStep(
+      stepNumber: stepNumber,
+      modelOutput: modelOutput.redacted(using: policy),
+      toolResults: toolResults.map { $0.redacted(using: policy) },
+      isFinalAnswer: isFinalAnswer
+    )
   }
 }
 
@@ -494,6 +538,84 @@ public enum ToolOutputSanitizer {
   }
 }
 
+public struct AgentRedactionPolicy: Equatable, Sendable {
+  public var replacement: String
+  public var sensitiveKeys: Set<String>
+
+  public init(
+    replacement: String = "[REDACTED]",
+    sensitiveKeys: Set<String> = Self.defaultSensitiveKeys
+  ) {
+    self.replacement = replacement
+    self.sensitiveKeys = Set(sensitiveKeys.map { $0.lowercased() })
+  }
+
+  public static let none = AgentRedactionPolicy(sensitiveKeys: [])
+
+  public static let standard = AgentRedactionPolicy()
+
+  public static let defaultSensitiveKeys: Set<String> = [
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "client_secret",
+    "cookie",
+    "key",
+    "password",
+    "private_key",
+    "secret",
+    "session",
+    "token"
+  ]
+
+  public func redact(_ text: String) -> String {
+    guard !sensitiveKeys.isEmpty, !text.isEmpty else {
+      return text
+    }
+
+    var redacted = text
+    redacted = redactBearerTokens(in: redacted)
+    redacted = redactKeyValuePairs(in: redacted)
+    return redacted
+  }
+
+  public func redact(arguments: [String: String]) -> [String: String] {
+    guard !sensitiveKeys.isEmpty else {
+      return arguments
+    }
+
+    return arguments.reduce(into: [String: String]()) { partialResult, pair in
+      partialResult[pair.key] = isSensitiveKey(pair.key) ? replacement : redact(pair.value)
+    }
+  }
+
+  private func redactKeyValuePairs(in text: String) -> String {
+    sensitiveKeys.reduce(text) { partialResult, key in
+      let pattern = #"(?i)(\b"# + NSRegularExpression.escapedPattern(for: key) + #"\b\s*[:=]\s*["']?)([^"',\s}]+)"#
+      return replace(pattern: pattern, in: partialResult, template: "$1\(replacement)")
+    }
+  }
+
+  private func redactBearerTokens(in text: String) -> String {
+    replace(pattern: #"(?i)(bearer\s+)([A-Za-z0-9._~+/\-=]+)"#, in: text, template: "$1\(replacement)")
+  }
+
+  private func replace(pattern: String, in text: String, template: String) -> String {
+    guard let expression = try? NSRegularExpression(pattern: pattern) else {
+      return text
+    }
+
+    let range = NSRange(text.startIndex..<text.endIndex, in: text)
+    return expression.stringByReplacingMatches(in: text, range: range, withTemplate: template)
+  }
+
+  private func isSensitiveKey(_ key: String) -> Bool {
+    let normalizedKey = key.lowercased()
+    return sensitiveKeys.contains { normalizedKey == $0 || normalizedKey.contains($0) }
+  }
+}
+
 public struct AgentRun: Codable, Equatable, Sendable {
   public var finalAnswer: String
   public var steps: [ActionStep]
@@ -505,6 +627,15 @@ public struct AgentRun: Codable, Equatable, Sendable {
     self.steps = steps
     self.messages = messages
     self.events = events
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> AgentRun {
+    AgentRun(
+      finalAnswer: policy.redact(finalAnswer),
+      steps: steps.map { $0.redacted(using: policy) },
+      messages: messages.map { $0.redacted(using: policy) },
+      events: events.map { $0.redacted(using: policy) }
+    )
   }
 }
 
@@ -606,16 +737,18 @@ public struct FileAgentMemoryStore: AgentMemoryStore {
 
 public struct AgentTraceExporter {
   public var encoder: JSONEncoder
+  public var redactionPolicy: AgentRedactionPolicy
 
-  public init() {
+  public init(redactionPolicy: AgentRedactionPolicy = .standard) {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
     self.encoder = encoder
+    self.redactionPolicy = redactionPolicy
   }
 
   public func data(for run: AgentRun, createdAt: Date = Date()) throws -> Data {
-    try encoder.encode(AgentRunEnvelope(createdAt: createdAt, run: run))
+    try encoder.encode(AgentRunEnvelope(createdAt: createdAt, run: run.redacted(using: redactionPolicy)))
   }
 
   public func write(_ run: AgentRun, to fileURL: URL, createdAt: Date = Date()) throws {
@@ -627,15 +760,18 @@ public struct AgentTraceExporter {
 
 public struct AgentReceiptExporter {
   public var encoder: JSONEncoder
+  public var redactionPolicy: AgentRedactionPolicy
 
-  public init() {
+  public init(redactionPolicy: AgentRedactionPolicy = .standard) {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     encoder.dateEncodingStrategy = .iso8601
     self.encoder = encoder
+    self.redactionPolicy = redactionPolicy
   }
 
   public func receipt(for run: AgentRun, createdAt: Date = Date()) throws -> AgentRunReceipt {
+    let run = run.redacted(using: redactionPolicy)
     let stableEncoder = Self.stableEncoder()
     let runHash = try Self.hash(stableEncoder.encode(run))
     var previousHash: String?

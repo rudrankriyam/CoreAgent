@@ -616,6 +616,70 @@ import Foundation
   #expect(envelope.run == run)
 }
 
+@Test func agentTraceExporterRedactsSensitiveFieldsByDefault() async throws {
+  let run = AgentRun(
+    finalAnswer: "Saved token=final-secret",
+    steps: [
+      ActionStep(
+        stepNumber: 1,
+        modelOutput: .toolCalls([
+          ToolCall(id: "call_1", name: "save", arguments: ["api_key": "sk-live-secret", "note": "safe"])
+        ]),
+        toolResults: [
+          ToolResult(callID: "call_1", output: "authorization: Bearer live-token")
+        ]
+      )
+    ],
+    messages: [
+      AgentMessage(role: .user, content: "password=hunter2"),
+      AgentMessage(role: .tool, content: "token=tool-secret", toolCallID: "call_1")
+    ],
+    events: [
+      AgentEvent(
+        kind: .toolCallStarted,
+        message: "api_key=event-secret",
+        toolCall: ToolCall(id: "call_1", name: "save", arguments: ["token": "event-token"])
+      ),
+      AgentEvent(
+        kind: .toolCallFinished,
+        message: "client_secret=event-client-secret",
+        toolResult: ToolResult(callID: "call_1", output: "Bearer result-token")
+      )
+    ]
+  )
+
+  let data = try AgentTraceExporter().data(for: run, createdAt: Date(timeIntervalSince1970: 0))
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(!json.contains("final-secret"))
+  #expect(!json.contains("sk-live-secret"))
+  #expect(!json.contains("live-token"))
+  #expect(!json.contains("hunter2"))
+  #expect(!json.contains("tool-secret"))
+  #expect(!json.contains("event-secret"))
+  #expect(!json.contains("event-token"))
+  #expect(!json.contains("event-client-secret"))
+  #expect(!json.contains("result-token"))
+  #expect(json.contains("[REDACTED]"))
+  #expect(json.contains("safe"))
+}
+
+@Test func agentTraceExporterCanKeepSensitiveFieldsWhenConfigured() throws {
+  let run = AgentRun(
+    finalAnswer: "token=visible-secret",
+    steps: [],
+    messages: [
+      AgentMessage(role: .user, content: "token=visible-secret")
+    ],
+    events: []
+  )
+
+  let data = try AgentTraceExporter(redactionPolicy: .none).data(for: run, createdAt: Date(timeIntervalSince1970: 0))
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(json.contains("visible-secret"))
+}
+
 @Test func agentReceiptExporterWritesDecodableReceipt() async throws {
   let fileURL = FileManager.default.temporaryDirectory
     .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
@@ -649,6 +713,30 @@ import Foundation
   #expect(receipt.runHash.count == 64)
   #expect(receipt.finalHash.count == 64)
   #expect(try AgentReceiptExporter().verify(receipt, for: run))
+}
+
+@Test func agentReceiptExporterHashesRedactedRunByDefault() throws {
+  let run = AgentRun(
+    finalAnswer: "token=receipt-secret",
+    steps: [],
+    messages: [
+      AgentMessage(role: .user, content: "api_key=receipt-key")
+    ],
+    events: [
+      AgentEvent(kind: .runStarted, message: "authorization: Bearer receipt-token")
+    ]
+  )
+  let exporter = AgentReceiptExporter()
+  let receipt = try exporter.receipt(for: run, createdAt: Date(timeIntervalSince1970: 0))
+  let data = try exporter.data(for: run, createdAt: Date(timeIntervalSince1970: 0))
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(!json.contains("receipt-secret"))
+  #expect(!json.contains("receipt-key"))
+  #expect(!json.contains("receipt-token"))
+  #expect(json.contains("[REDACTED]"))
+  #expect(try exporter.verify(receipt, for: run.redacted()))
+  #expect(try !exporter.verify(receipt, for: run))
 }
 
 @Test func agentReceiptsAreStableForTheSameRunAndDate() throws {

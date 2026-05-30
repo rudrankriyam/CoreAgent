@@ -19,11 +19,13 @@ struct KarmaCLI {
       let enablesVerboseOutput = arguments.removeAll("--verbose")
       let enablesStreaming = arguments.removeAll("--stream")
       let enablesStructuredDemo = arguments.removeAll("--structured-demo")
+      let disablesRedaction = arguments.removeAll("--no-redaction")
       let tracePath = arguments.removeOptionValue("--trace")
       let receiptPath = arguments.removeOptionValue("--receipt")
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
       let prompt = arguments.joined(separator: " ")
       let tools = enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : []
+      let redactionPolicy: AgentRedactionPolicy = disablesRedaction ? .none : .standard
 
       if listsTools {
         try printToolManifests(for: tools)
@@ -74,11 +76,11 @@ struct KarmaCLI {
           fputs("\n\(run.events.karmaDebugDescription)\n", stderr)
         }
         if let tracePath {
-          try AgentTraceExporter().write(run, to: URL(fileURLWithPath: tracePath))
+          try AgentTraceExporter(redactionPolicy: redactionPolicy).write(run, to: URL(fileURLWithPath: tracePath))
           fputs("Trace written to \(tracePath)\n", stderr)
         }
         if let receiptPath {
-          try AgentReceiptExporter().write(run, to: URL(fileURLWithPath: receiptPath))
+          try AgentReceiptExporter(redactionPolicy: redactionPolicy).write(run, to: URL(fileURLWithPath: receiptPath))
           fputs("Receipt written to \(receiptPath)\n", stderr)
         }
       } else {
@@ -99,6 +101,7 @@ struct KarmaCLI {
     print("       karma --stream <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
     print("       karma --receipt /tmp/karma-receipt.json <prompt>")
+    print("       karma --no-redaction --trace /tmp/karma-trace.json <prompt>")
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
