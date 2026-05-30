@@ -831,6 +831,84 @@ import Foundation
   #expect(json.contains("[REDACTED]"))
 }
 
+@Test func agentDiscoveryDocumentRedactsConfigurationAndMetadata() throws {
+  let configuration = AgentConfiguration(
+    systemPrompt: "Use api_key=system-secret.",
+    maxSteps: 3,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: AgentLimits(maximumContextMessages: 6),
+    toolCallExecutionMode: .parallel,
+    toolManifests: [
+      try ToolManifest(
+        name: "lookup",
+        description: "Looks up token=tool-secret.",
+        inputs: [
+          "query": ToolInput(type: .string, description: "Search with client_secret=input-secret.")
+        ]
+      )
+    ]
+  )
+  let document = AgentDiscoveryDocument(
+    id: "agent-api_key=id-secret",
+    name: "Agent token=name-secret",
+    description: "Uses client_secret=description-secret.",
+    capabilities: ["custom", "tool-calling", "custom"],
+    tags: ["swift", "swift", "token=tag-secret"],
+    endpoints: [
+      AgentEndpoint(name: "b", transport: "https", url: "https://example.com?api_key=url-secret"),
+      AgentEndpoint(name: "a", transport: "stdio")
+    ],
+    configuration: configuration
+  )
+
+  let redacted = try document.redacted()
+  let data = try JSONEncoder().encode(redacted)
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(document.endpoints.map(\.name) == ["a", "b"])
+  #expect(document.capabilities.contains("parallel-tool-calls"))
+  #expect(document.capabilities.contains("recoverable-tool-arguments"))
+  #expect(document.capabilities.filter { $0 == "custom" }.count == 1)
+  #expect(!json.contains("system-secret"))
+  #expect(!json.contains("tool-secret"))
+  #expect(!json.contains("input-secret"))
+  #expect(!json.contains("id-secret"))
+  #expect(!json.contains("name-secret"))
+  #expect(!json.contains("description-secret"))
+  #expect(!json.contains("tag-secret"))
+  #expect(!json.contains("url-secret"))
+}
+
+@Test func agentBuildsDiscoveryDocumentFromRuntimeConfiguration() throws {
+  let tool = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
+    "ok"
+  }
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: ScriptedModel(outputs: []),
+    toolCallExecutionMode: .parallel
+  )
+
+  let document = try agent.discoveryDocument(
+    id: "com.example.agent",
+    name: "Example Agent",
+    description: "Example local agent.",
+    capabilities: ["trace-export"],
+    tags: ["swift"],
+    endpoints: [AgentEndpoint(name: "cli", transport: "stdio")]
+  )
+
+  #expect(AgentDiscoveryDocument.wellKnownPath == "/.well-known/agent.json")
+  #expect(document.configuration.toolManifests.map(\.name) == ["lookup"])
+  #expect(document.capabilities.contains("tool-calling"))
+  #expect(document.capabilities.contains("parallel-tool-calls"))
+  #expect(document.capabilities.contains("trace-export"))
+  #expect(document.tags == ["swift"])
+  #expect(document.endpoints == [AgentEndpoint(name: "cli", transport: "stdio")])
+}
+
 @Test func agentConfigurationDefaultsMissingToolExecutionMode() throws {
   let json = """
     {

@@ -915,6 +915,96 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
   }
 }
 
+public struct AgentEndpoint: Codable, Equatable, Sendable {
+  public var name: String
+  public var transport: String
+  public var url: String?
+
+  public init(name: String, transport: String, url: String? = nil) {
+    self.name = name
+    self.transport = transport
+    self.url = url
+  }
+}
+
+public struct AgentDiscoveryDocument: Codable, Equatable, Sendable {
+  public static let wellKnownPath = "/.well-known/agent.json"
+
+  public var version: Int
+  public var id: String
+  public var name: String
+  public var description: String
+  public var capabilities: [String]
+  public var tags: [String]
+  public var endpoints: [AgentEndpoint]
+  public var configuration: AgentConfiguration
+
+  public init(
+    version: Int = 1,
+    id: String,
+    name: String,
+    description: String,
+    capabilities: [String] = [],
+    tags: [String] = [],
+    endpoints: [AgentEndpoint] = [],
+    configuration: AgentConfiguration
+  ) {
+    self.version = version
+    self.id = id
+    self.name = name
+    self.description = description
+    self.capabilities = Self.normalized(Self.defaultCapabilities(for: configuration) + capabilities)
+    self.tags = Self.normalized(tags)
+    self.endpoints = endpoints.sorted { $0.name < $1.name }
+    self.configuration = configuration
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) throws -> AgentDiscoveryDocument {
+    try AgentDiscoveryDocument(
+      version: version,
+      id: policy.redact(id),
+      name: policy.redact(name),
+      description: policy.redact(description),
+      capabilities: capabilities,
+      tags: tags.map(policy.redact),
+      endpoints: endpoints.map { endpoint in
+        AgentEndpoint(
+          name: policy.redact(endpoint.name),
+          transport: policy.redact(endpoint.transport),
+          url: endpoint.url.map(policy.redact)
+        )
+      },
+      configuration: configuration.redacted(using: policy)
+    )
+  }
+
+  private static func defaultCapabilities(for configuration: AgentConfiguration) -> [String] {
+    var capabilities = ["tool-calling"]
+
+    if configuration.toolCallExecutionMode == .parallel {
+      capabilities.append("parallel-tool-calls")
+    }
+    if configuration.toolArgumentErrorRecoveryMode == .recover {
+      capabilities.append("recoverable-tool-arguments")
+    }
+    if configuration.finalAnswerRecoveryMode == .recover {
+      capabilities.append("recoverable-final-answers")
+    }
+    if configuration.limits.maximumContextMessages != nil {
+      capabilities.append("context-windowing")
+    }
+    if !configuration.toolManifests.isEmpty {
+      capabilities.append("tool-manifest-digests")
+    }
+
+    return capabilities
+  }
+
+  private static func normalized(_ values: [String]) -> [String] {
+    Array(Set(values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })).sorted()
+  }
+}
+
 public struct ActionStep: Codable, Equatable, Sendable {
   public var stepNumber: Int
   public var modelOutput: ModelOutput
@@ -1954,6 +2044,25 @@ public final class ToolCallingAgent: @unchecked Sendable {
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
       finalAnswerRecoveryMode: finalAnswerRecoveryMode,
       toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
+    )
+  }
+
+  public func discoveryDocument(
+    id: String,
+    name: String,
+    description: String,
+    capabilities: [String] = [],
+    tags: [String] = [],
+    endpoints: [AgentEndpoint] = []
+  ) throws -> AgentDiscoveryDocument {
+    try AgentDiscoveryDocument(
+      id: id,
+      name: name,
+      description: description,
+      capabilities: capabilities,
+      tags: tags,
+      endpoints: endpoints,
+      configuration: configuration()
     )
   }
 

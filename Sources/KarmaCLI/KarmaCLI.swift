@@ -16,6 +16,7 @@ struct KarmaCLI {
 
       let listsTools = arguments.removeAll("--list-tools")
       let printsConfiguration = arguments.removeAll("--print-config")
+      let printsDiscovery = arguments.removeAll("--print-discovery")
       let enablesDemoTools = arguments.removeAll("--demo-tools")
       let enablesVerboseOutput = arguments.removeAll("--verbose")
       let enablesStreaming = arguments.removeAll("--stream")
@@ -48,6 +49,21 @@ struct KarmaCLI {
 
       if printsConfiguration {
         try printAgentConfiguration(
+          tools: tools,
+          maximumModelInputCharacters: maximumModelInputCharacters,
+          maximumToolOutputCharacters: maximumToolOutputCharacters,
+          maximumContextMessages: maximumContextMessages,
+          timeouts: timeouts,
+          toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
+          toolArgumentErrorRecoveryMode: failsOnToolArgumentError ? .fail : .recover,
+          finalAnswerRecoveryMode: failsOnFinalAnswerRejection ? .fail : .recover,
+          redactionPolicy: redactionPolicy
+        )
+        return
+      }
+
+      if printsDiscovery {
+        try printAgentDiscovery(
           tools: tools,
           maximumModelInputCharacters: maximumModelInputCharacters,
           maximumToolOutputCharacters: maximumToolOutputCharacters,
@@ -152,6 +168,7 @@ struct KarmaCLI {
     print("       karma --demo-tools <prompt>")
     print("       karma --demo-tools --list-tools")
     print("       karma --demo-tools --print-config")
+    print("       karma --demo-tools --print-discovery")
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
     print("       karma --parallel-tools --demo-tools <prompt>")
@@ -225,6 +242,50 @@ struct KarmaCLI {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(configuration.redacted(using: redactionPolicy))
+    print(String(decoding: data, as: UTF8.self))
+  }
+
+  private static func printAgentDiscovery(
+    tools: [any Tool],
+    maximumModelInputCharacters: Int?,
+    maximumToolOutputCharacters: Int?,
+    maximumContextMessages: Int?,
+    timeouts: AgentTimeouts,
+    toolCallExecutionMode: ToolCallExecutionMode,
+    toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode,
+    finalAnswerRecoveryMode: FinalAnswerRecoveryMode,
+    redactionPolicy: AgentRedactionPolicy
+  ) throws {
+    let configuration = AgentConfiguration(
+      systemPrompt: "You are a helpful Swift agent. Use tools when useful, then return a final answer.",
+      maxSteps: 8,
+      resetsMemoryBeforeRun: true,
+      retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
+      timeouts: timeouts,
+      limits: AgentLimits(
+        maximumModelInputCharacters: maximumModelInputCharacters,
+        maximumToolOutputCharacters: maximumToolOutputCharacters,
+        maximumContextMessages: maximumContextMessages
+      ),
+      toolCallExecutionMode: toolCallExecutionMode,
+      toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
+      finalAnswerRecoveryMode: finalAnswerRecoveryMode,
+      toolManifests: try tools.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
+    )
+    let document = AgentDiscoveryDocument(
+      id: "com.rryam.karmakit.cli",
+      name: "Karma CLI Agent",
+      description: "Local Swift agent powered by KarmaKit.",
+      capabilities: ["foundation-models", "trace-export", "receipt-export"],
+      tags: ["swift", "local-first", "apple-platforms"],
+      endpoints: [
+        AgentEndpoint(name: "cli", transport: "stdio")
+      ],
+      configuration: configuration
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let data = try encoder.encode(document.redacted(using: redactionPolicy))
     print(String(decoding: data, as: UTF8.self))
   }
 }

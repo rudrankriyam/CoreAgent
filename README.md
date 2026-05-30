@@ -39,6 +39,7 @@ swift run karma "Explain tool calling in one sentence"
 swift run karma --demo-tools "Use the multiply tool to multiply 12 by 13. Return only the number."
 swift run karma --demo-tools --list-tools
 swift run karma --demo-tools --print-config
+swift run karma --demo-tools --print-discovery
 swift run karma --verbose --demo-tools "What time is it? Use the available action."
 swift run karma --stream "Write one sentence about local agents."
 swift run karma --parallel-tools --demo-tools "Use the available actions when helpful."
@@ -66,6 +67,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ToolCallingAgent`: minimal loop that asks a model for tool calls or a final answer.
 - `ToolCallingAgent` serializes runs per instance so shared agent memory stays consistent.
 - `AgentConfiguration`: persists safe runtime settings and approved tool manifests.
+- `AgentDiscoveryDocument`: exports redacted agent metadata for discovery files such as `/.well-known/agent.json`.
 - `ToolCallExecutionMode`: runs multiple tool calls sequentially or in parallel.
 - `ToolArgumentErrorRecoveryMode`: turns invalid tool arguments into retryable tool feedback, with opt-in fail-fast behavior.
 - `FinalAnswerRecoveryMode`: turns rejected final answers into retryable model feedback, with opt-in fail-fast behavior.
