@@ -1091,6 +1091,69 @@ import Foundation
   #expect(agent.snapshotRun().metrics.toolFailureCount == 1)
 }
 
+@Test func modelGenerationCanTimeOut() async throws {
+  let model = SlowModel(delay: .milliseconds(100), output: .finalAnswer("late"))
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    timeouts: AgentTimeouts(modelGeneration: .milliseconds(10))
+  )
+
+  do {
+    _ = try await agent.run("Answer slowly")
+    Issue.record("Expected model timeout")
+  } catch KarmaError.retryLimitExceeded(let attempts, let reason) {
+    #expect(attempts == 1)
+    #expect(reason.contains("timedOut"))
+    #expect(reason.contains("model.generation"))
+  }
+
+  #expect(await model.generateCallCount == 1)
+  #expect(agent.memory.events.last?.kind == .runFailed)
+  #expect(agent.snapshotRun().metrics.isFailed)
+}
+
+@Test func streamingModelGenerationCanTimeOut() async throws {
+  let model = SlowStreamingModel(delay: .milliseconds(100), output: .finalAnswer("late"))
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    timeouts: AgentTimeouts(modelGeneration: .milliseconds(10))
+  )
+  let recorder = PartialRecorder()
+
+  do {
+    _ = try await agent.runStreaming("Stream slowly") { partial in
+      await recorder.record(partial)
+    }
+    Issue.record("Expected streaming timeout")
+  } catch KarmaError.retryLimitExceeded(let attempts, let reason) {
+    #expect(attempts == 1)
+    #expect(reason.contains("timedOut"))
+    #expect(reason.contains("model.generation"))
+  }
+
+  #expect(await model.streamCallCount == 1)
+  #expect(await recorder.partials.isEmpty)
+  #expect(agent.memory.events.last?.kind == .runFailed)
+}
+
+@Test func modelGenerationTimeoutCanRetry() async throws {
+  let model = SlowThenSuccessfulModel(delay: .milliseconds(100), answer: "recovered")
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    retryPolicy: RetryPolicy(maximumRetries: 1),
+    timeouts: AgentTimeouts(modelGeneration: .milliseconds(10))
+  )
+
+  let run = try await agent.run("Recover after a slow attempt")
+
+  #expect(run.finalAnswer == "recovered")
+  #expect(await model.generateCallCount == 2)
+  #expect(run.events.filter { $0.kind == .modelRetry }.count == 1)
+}
+
 @Test func throwingToolRecordsToolFailureEvent() async throws {
   let tool = ClosureTool(name: "unstable", description: "Fails.", inputs: [:]) { _ in
     throw ToolFailureError.offline
@@ -1630,6 +1693,43 @@ private actor CountingModel: ModelProvider {
   }
 }
 
+private actor SlowModel: ModelProvider {
+  private(set) var generateCallCount = 0
+  private let delay: Duration
+  private let output: ModelOutput
+
+  init(delay: Duration, output: ModelOutput) {
+    self.delay = delay
+    self.output = output
+  }
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    generateCallCount += 1
+    try await Task.sleep(for: delay)
+    return output
+  }
+}
+
+private actor SlowThenSuccessfulModel: ModelProvider {
+  private(set) var generateCallCount = 0
+  private let delay: Duration
+  private let answer: String
+
+  init(delay: Duration, answer: String) {
+    self.delay = delay
+    self.answer = answer
+  }
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    generateCallCount += 1
+    if generateCallCount == 1 {
+      try await Task.sleep(for: delay)
+    }
+
+    return .finalAnswer(answer)
+  }
+}
+
 private actor CapturingModel: ModelProvider {
   private let outputs: [ModelOutput]
   private var index = 0
@@ -1647,6 +1747,35 @@ private actor CapturingModel: ModelProvider {
 
     let output = outputs[index]
     index += 1
+    return output
+  }
+}
+
+private actor SlowStreamingModel: StreamingModelProvider {
+  private(set) var generateCallCount = 0
+  private(set) var streamCallCount = 0
+  private let delay: Duration
+  private let output: ModelOutput
+
+  init(delay: Duration, output: ModelOutput) {
+    self.delay = delay
+    self.output = output
+  }
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    generateCallCount += 1
+    try await Task.sleep(for: delay)
+    return output
+  }
+
+  func stream(
+    messages: [AgentMessage],
+    tools: [any KarmaKit.Tool],
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> ModelOutput {
+    streamCallCount += 1
+    try await Task.sleep(for: delay)
+    await onPartialResponse("late")
     return output
   }
 }

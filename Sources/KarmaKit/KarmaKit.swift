@@ -571,9 +571,11 @@ extension RetryPolicy: Codable {
 
 public struct AgentTimeouts: Equatable, Sendable {
   public var toolCall: Duration?
+  public var modelGeneration: Duration?
 
-  public init(toolCall: Duration? = nil) {
+  public init(toolCall: Duration? = nil, modelGeneration: Duration? = nil) {
     self.toolCall = toolCall
+    self.modelGeneration = modelGeneration
   }
 
   public static let none = AgentTimeouts()
@@ -582,16 +584,20 @@ public struct AgentTimeouts: Equatable, Sendable {
 extension AgentTimeouts: Codable {
   private enum CodingKeys: String, CodingKey {
     case toolCallSeconds
+    case modelGenerationSeconds
   }
 
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     toolCall = try container.decodeIfPresent(Double.self, forKey: .toolCallSeconds).map(Duration.seconds)
+    modelGeneration = try container.decodeIfPresent(Double.self, forKey: .modelGenerationSeconds)
+      .map(Duration.seconds)
   }
 
   public func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encodeIfPresent(toolCall?.secondsValue, forKey: .toolCallSeconds)
+    try container.encodeIfPresent(modelGeneration?.secondsValue, forKey: .modelGenerationSeconds)
   }
 }
 
@@ -1808,18 +1814,12 @@ public final class ToolCallingAgent: @unchecked Sendable {
     while attempt <= retryPolicy.maximumRetries {
       do {
         try await checkInterruption(cancellation, stepNumber: stepNumber)
-        if let onPartialResponse, let streamingModel = model as? any StreamingModelProvider {
-          return try await streamingModel.stream(
-            messages: messages,
-            tools: tools,
-            onPartialResponse: { partial in
-              await onPartialResponse(partial)
-              await self.emit(.init(kind: .partialResponse, stepNumber: stepNumber, message: partial))
-            }
-          )
-        }
-
-        return try await model.generate(messages: messages, tools: tools)
+        return try await generateModelAttempt(
+          messages: messages,
+          tools: tools,
+          stepNumber: stepNumber,
+          onPartialResponse: onPartialResponse
+        )
       } catch {
         lastError = error
         guard attempt < retryPolicy.maximumRetries else {
@@ -1835,6 +1835,34 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     throw KarmaError.retryLimitExceeded(attempts: attempt, reason: String(describing: lastError))
+  }
+
+  private func generateModelAttempt(
+    messages: [AgentMessage],
+    tools: [any Tool],
+    stepNumber: Int,
+    onPartialResponse: (@Sendable (String) async -> Void)?
+  ) async throws -> ModelOutput {
+    let operation: @Sendable () async throws -> ModelOutput = {
+      if let onPartialResponse, let streamingModel = self.model as? any StreamingModelProvider {
+        return try await streamingModel.stream(
+          messages: messages,
+          tools: tools,
+          onPartialResponse: { partial in
+            await onPartialResponse(partial)
+            await self.emit(.init(kind: .partialResponse, stepNumber: stepNumber, message: partial))
+          }
+        )
+      }
+
+      return try await self.model.generate(messages: messages, tools: tools)
+    }
+
+    guard let timeout = timeouts.modelGeneration else {
+      return try await operation()
+    }
+
+    return try await withTimeout(timeout, operation: "model.generation", operation)
   }
 
   private func modelInputMessages(stepNumber: Int) async -> [AgentMessage] {
