@@ -260,6 +260,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
   public var toolCall: ToolCall?
   public var toolResult: ToolResult?
   public var toolManifest: ToolManifest?
+  public var managedRun: ManagedAgentRunReport?
   public var trace: AgentEventTrace?
 
   public init(
@@ -271,6 +272,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     toolCall: ToolCall? = nil,
     toolResult: ToolResult? = nil,
     toolManifest: ToolManifest? = nil,
+    managedRun: ManagedAgentRunReport? = nil,
     trace: AgentEventTrace? = nil
   ) {
     self.kind = kind
@@ -281,6 +283,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     self.toolCall = toolCall
     self.toolResult = toolResult
     self.toolManifest = toolManifest
+    self.managedRun = managedRun
     self.trace = trace
   }
 
@@ -294,6 +297,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
       toolCall: toolCall?.redacted(using: policy),
       toolResult: toolResult?.redacted(using: policy),
       toolManifest: toolManifest,
+      managedRun: managedRun?.redacted(using: policy),
       trace: trace
     )
   }
@@ -315,6 +319,22 @@ public struct ToolExecutionReport: Sendable {
 
 public protocol ReportingTool: Tool {
   func callWithReport(arguments: [String: String]) async throws -> ToolExecutionReport
+}
+
+public struct ManagedAgentToolError: Error, CustomStringConvertible, Sendable {
+  public var errorType: String
+  public var errorDescription: String
+  public var managedRun: ManagedAgentRunReport
+
+  public init(error: any Error, managedRun: ManagedAgentRunReport) {
+    self.errorType = String(reflecting: Swift.type(of: error))
+    self.errorDescription = String(describing: error)
+    self.managedRun = managedRun
+  }
+
+  public var description: String {
+    "Managed agent failed with \(errorDescription)"
+  }
 }
 
 public actor AgentCancellation {
@@ -487,8 +507,12 @@ public struct ManagedAgentTool: ReportingTool {
       throw KarmaError.invalidToolArguments(tool: name, expected: Array(inputs.keys).sorted())
     }
 
-    let run = try await agent.run(task, cancellation: cancellation)
-    return ToolExecutionReport(output: run.finalAnswer, managedRun: ManagedAgentRunReport(run: run))
+    do {
+      let run = try await agent.run(task, cancellation: cancellation)
+      return ToolExecutionReport(output: run.finalAnswer, managedRun: ManagedAgentRunReport(run: run))
+    } catch {
+      throw ManagedAgentToolError(error: error, managedRun: ManagedAgentRunReport(run: agent.snapshotRun()))
+    }
   }
 }
 
@@ -1925,6 +1949,21 @@ public final class ToolCallingAgent: @unchecked Sendable {
       return ToolExecutionOutput(index: prepared.index, result: result, events: events, failure: nil)
     } catch KarmaError.interrupted(let reason) {
       throw KarmaError.interrupted(reason: reason)
+    } catch let managedFailure as ManagedAgentToolError {
+      throw ToolExecutionFailure(
+        index: prepared.index,
+        underlyingError: managedFailure,
+        event: AgentEvent(
+          kind: .toolCallFailed,
+          stepNumber: prepared.stepNumber,
+          message: managedFailure.description,
+          errorType: managedFailure.errorType,
+          errorDescription: managedFailure.errorDescription,
+          toolCall: prepared.call,
+          toolManifest: prepared.manifest,
+          managedRun: managedFailure.managedRun
+        )
+      )
     } catch {
       throw ToolExecutionFailure(
         index: prepared.index,
@@ -2131,6 +2170,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
         toolCall: event.toolCall,
         toolResult: limitedResult,
         toolManifest: event.toolManifest,
+        managedRun: event.managedRun,
         trace: event.trace
       ),
       message

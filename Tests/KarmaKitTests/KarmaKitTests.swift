@@ -945,9 +945,61 @@ import Foundation
     agent: childAgent
   )
 
-  await #expect(throws: KarmaError.finalAnswerRejected("Final answer was empty.")) {
+  do {
     _ = try await managedTool.call(arguments: ["task": "Return empty"])
+    Issue.record("Expected child failure")
+  } catch let error as ManagedAgentToolError {
+    #expect(error.errorDescription == "finalAnswerRejected(\"Final answer was empty.\")")
   }
+}
+
+@Test func managedAgentToolFailureCarriesChildRunReport() async throws {
+  let childAgent = ToolCallingAgent(
+    tools: [],
+    model: ScriptedModel(outputs: [.finalAnswer("")])
+  )
+  let managedTool = ManagedAgentTool(
+    name: "delegate_to_child",
+    description: "Delegates work to a child agent.",
+    agent: childAgent
+  )
+
+  do {
+    _ = try await managedTool.callWithReport(arguments: ["task": "Return empty"])
+    Issue.record("Expected child failure")
+  } catch let error as ManagedAgentToolError {
+    #expect(error.errorDescription == "finalAnswerRejected(\"Final answer was empty.\")")
+    #expect(error.managedRun.metrics.isFailed)
+    #expect(error.managedRun.events.last?.kind == .runFailed)
+  }
+}
+
+@Test func parentToolFailureEventCarriesManagedRunReport() async throws {
+  let childAgent = ToolCallingAgent(
+    tools: [],
+    model: ScriptedModel(outputs: [.finalAnswer("")])
+  )
+  let managedTool = ManagedAgentTool(
+    name: "delegate_to_child",
+    description: "Delegates work to a child agent.",
+    agent: childAgent
+  )
+  let parentModel = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "parent_call", name: "delegate_to_child", arguments: ["task": "Return empty"])])
+  ])
+  let parentAgent = ToolCallingAgent(tools: [managedTool], model: parentModel)
+
+  await #expect(throws: ManagedAgentToolError.self) {
+    _ = try await parentAgent.run("Delegate this")
+  }
+
+  let failedEvent = try #require(parentAgent.memory.events.first { $0.kind == .toolCallFailed })
+  let report = try #require(failedEvent.managedRun)
+  #expect(failedEvent.toolCall?.id == "parent_call")
+  #expect(failedEvent.errorDescription == "finalAnswerRejected(\"Final answer was empty.\")")
+  #expect(report.metrics.isFailed)
+  #expect(report.events.last?.kind == .runFailed)
+  #expect(report.events.allSatisfy { $0.trace != nil })
 }
 
 @Test func agentCanBeInterruptedBeforeModelGeneration() async throws {
@@ -1003,8 +1055,12 @@ import Foundation
     cancellation: cancellation
   )
 
-  await #expect(throws: KarmaError.interrupted(reason: "Child was stopped.")) {
+  do {
     _ = try await managedTool.call(arguments: ["task": "Stop child"])
+    Issue.record("Expected child interruption")
+  } catch let error as ManagedAgentToolError {
+    #expect(error.errorDescription == "interrupted(reason: \"Child was stopped.\")")
+    #expect(error.managedRun.metrics.isInterrupted)
   }
 }
 
@@ -1472,6 +1528,31 @@ import Foundation
         kind: .toolCallFinished,
         message: "client_secret=event-client-secret",
         toolResult: ToolResult(callID: "call_1", output: "Bearer result-token")
+      ),
+      AgentEvent(
+        kind: .toolCallFailed,
+        message: "token=managed-event-secret",
+        managedRun: ManagedAgentRunReport(
+          finalAnswer: "token=managed-event-final-secret",
+          metrics: AgentRunMetrics(
+            stepCount: 0,
+            messageCount: 1,
+            eventCount: 0,
+            modelOutputCount: 0,
+            modelRetryCount: 0,
+            toolCallCount: 0,
+            toolResultCount: 0,
+            limitedToolOutputCount: 0,
+            partialResponseCount: 0,
+            isInterrupted: false,
+            isFailed: true,
+            durationSeconds: nil
+          ),
+          messages: [
+            AgentMessage(role: .user, content: "password=managed-event-message-secret")
+          ],
+          events: []
+        )
       )
     ]
   )
@@ -1488,6 +1569,9 @@ import Foundation
   #expect(!json.contains("event-token"))
   #expect(!json.contains("event-client-secret"))
   #expect(!json.contains("result-token"))
+  #expect(!json.contains("managed-event-secret"))
+  #expect(!json.contains("managed-event-final-secret"))
+  #expect(!json.contains("managed-event-message-secret"))
   #expect(json.contains("[REDACTED]"))
   #expect(json.contains("safe"))
 }
