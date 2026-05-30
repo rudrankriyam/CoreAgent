@@ -288,6 +288,7 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case modelInputWindowed
   case modelInputNormalized
   case partialResponse
+  case finalAnswerRejected
   case finalAnswerAccepted
   case runInterrupted
   case runFailed
@@ -794,6 +795,11 @@ public enum ToolArgumentErrorRecoveryMode: String, Codable, Equatable, Sendable 
   case fail
 }
 
+public enum FinalAnswerRecoveryMode: String, Codable, Equatable, Sendable {
+  case recover
+  case fail
+}
+
 private extension Duration {
   var secondsValue: Double {
     let components = components
@@ -811,6 +817,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
   public var limits: AgentLimits
   public var toolCallExecutionMode: ToolCallExecutionMode
   public var toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode
+  public var finalAnswerRecoveryMode: FinalAnswerRecoveryMode
   public var toolManifests: [ToolManifest]
 
   private enum CodingKeys: String, CodingKey {
@@ -823,6 +830,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     case limits
     case toolCallExecutionMode
     case toolArgumentErrorRecoveryMode
+    case finalAnswerRecoveryMode
     case toolManifests
   }
 
@@ -836,6 +844,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     limits: AgentLimits,
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
+    finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
     toolManifests: [ToolManifest]
   ) {
     self.version = version
@@ -847,6 +856,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
     self.limits = limits
     self.toolCallExecutionMode = toolCallExecutionMode
     self.toolArgumentErrorRecoveryMode = toolArgumentErrorRecoveryMode
+    self.finalAnswerRecoveryMode = finalAnswerRecoveryMode
     self.toolManifests = toolManifests
   }
 
@@ -865,6 +875,10 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
       toolArgumentErrorRecoveryMode: try container.decodeIfPresent(
         ToolArgumentErrorRecoveryMode.self,
         forKey: .toolArgumentErrorRecoveryMode
+      ) ?? .recover,
+      finalAnswerRecoveryMode: try container.decodeIfPresent(
+        FinalAnswerRecoveryMode.self,
+        forKey: .finalAnswerRecoveryMode
       ) ?? .recover,
       toolManifests: try container.decode([ToolManifest].self, forKey: .toolManifests)
     )
@@ -895,6 +909,7 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
       limits: limits,
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
+      finalAnswerRecoveryMode: finalAnswerRecoveryMode,
       toolManifests: toolManifests.map { try $0.redacted(using: policy) }
     )
   }
@@ -1281,6 +1296,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
   public var modelInputWindowedCount: Int
   public var modelInputNormalizedCount: Int
   public var partialResponseCount: Int
+  public var finalAnswerRejectionCount: Int
   public var isInterrupted: Bool
   public var isFailed: Bool
   public var durationSeconds: Double?
@@ -1301,6 +1317,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     case modelInputNormalizedCount
     case modelRetryCount
     case partialResponseCount
+    case finalAnswerRejectionCount
     case isInterrupted
     case isFailed
     case durationSeconds
@@ -1322,6 +1339,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     modelInputWindowedCount: Int = 0,
     modelInputNormalizedCount: Int = 0,
     partialResponseCount: Int,
+    finalAnswerRejectionCount: Int = 0,
     isInterrupted: Bool,
     isFailed: Bool,
     durationSeconds: Double?,
@@ -1341,6 +1359,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     self.modelInputWindowedCount = modelInputWindowedCount
     self.modelInputNormalizedCount = modelInputNormalizedCount
     self.partialResponseCount = partialResponseCount
+    self.finalAnswerRejectionCount = finalAnswerRejectionCount
     self.isInterrupted = isInterrupted
     self.isFailed = isFailed
     self.durationSeconds = durationSeconds
@@ -1363,6 +1382,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       modelInputWindowedCount: run.events.filter { $0.kind == .modelInputWindowed }.count,
       modelInputNormalizedCount: run.events.filter { $0.kind == .modelInputNormalized }.count,
       partialResponseCount: run.events.filter { $0.kind == .partialResponse }.count,
+      finalAnswerRejectionCount: run.events.filter { $0.kind == .finalAnswerRejected }.count,
       isInterrupted: run.events.contains { $0.kind == .runInterrupted },
       isFailed: run.events.contains { $0.kind == .runFailed },
       durationSeconds: Self.durationSeconds(startedAt: run.startedAt, endedAt: run.endedAt),
@@ -1387,6 +1407,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       modelInputWindowedCount: try container.decodeIfPresent(Int.self, forKey: .modelInputWindowedCount) ?? 0,
       modelInputNormalizedCount: try container.decodeIfPresent(Int.self, forKey: .modelInputNormalizedCount) ?? 0,
       partialResponseCount: try container.decode(Int.self, forKey: .partialResponseCount),
+      finalAnswerRejectionCount: try container.decodeIfPresent(Int.self, forKey: .finalAnswerRejectionCount) ?? 0,
       isInterrupted: try container.decode(Bool.self, forKey: .isInterrupted),
       isFailed: try container.decode(Bool.self, forKey: .isFailed),
       durationSeconds: try container.decodeIfPresent(Double.self, forKey: .durationSeconds),
@@ -1727,6 +1748,8 @@ private struct AgentTraceContext {
         return "\(modelSpanID(stepNumber: event.stepNumber)).tool.\(callID)"
       }
       return "\(modelSpanID(stepNumber: event.stepNumber)).tool"
+    case .finalAnswerRejected:
+      return "\(modelSpanID(stepNumber: event.stepNumber)).answer.rejection"
     case .finalAnswerAccepted:
       return "\(modelSpanID(stepNumber: event.stepNumber)).answer"
     case .runInterrupted:
@@ -1744,7 +1767,7 @@ private struct AgentTraceContext {
       return "run"
     case .toolCallAuthorized, .toolCallDenied, .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
       return modelSpanID(stepNumber: event.stepNumber)
-    case .finalAnswerAccepted:
+    case .finalAnswerRejected, .finalAnswerAccepted:
       return modelSpanID(stepNumber: event.stepNumber)
     case .runInterrupted, .runFailed:
       return "run"
@@ -1785,6 +1808,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let limits: AgentLimits
   public let toolCallExecutionMode: ToolCallExecutionMode
   public let toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode
+  public let finalAnswerRecoveryMode: FinalAnswerRecoveryMode
   public let memoryStore: (any AgentMemoryStore)?
   public private(set) var memory: AgentMemory
   private let systemPrompt: String
@@ -1808,6 +1832,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     limits: AgentLimits = .none,
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
+    finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
     memoryStore: (any AgentMemoryStore)? = nil
   ) {
     self.systemPrompt = systemPrompt
@@ -1829,6 +1854,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.limits = limits
     self.toolCallExecutionMode = toolCallExecutionMode
     self.toolArgumentErrorRecoveryMode = toolArgumentErrorRecoveryMode
+    self.finalAnswerRecoveryMode = finalAnswerRecoveryMode
     self.memoryStore = memoryStore
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
@@ -1862,6 +1888,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       limits: configuration.limits,
       toolCallExecutionMode: configuration.toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: configuration.toolArgumentErrorRecoveryMode,
+      finalAnswerRecoveryMode: configuration.finalAnswerRecoveryMode,
       memoryStore: memoryStore
     )
   }
@@ -1883,6 +1910,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     limits: AgentLimits = .none,
     toolCallExecutionMode: ToolCallExecutionMode = .sequential,
     toolArgumentErrorRecoveryMode: ToolArgumentErrorRecoveryMode = .recover,
+    finalAnswerRecoveryMode: FinalAnswerRecoveryMode = .recover,
     memoryStore: (any AgentMemoryStore)? = nil,
     validatesToolNames: Bool
   ) throws {
@@ -1909,6 +1937,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       limits: limits,
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
+      finalAnswerRecoveryMode: finalAnswerRecoveryMode,
       memoryStore: memoryStore
     )
   }
@@ -1923,6 +1952,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       limits: limits,
       toolCallExecutionMode: toolCallExecutionMode,
       toolArgumentErrorRecoveryMode: toolArgumentErrorRecoveryMode,
+      finalAnswerRecoveryMode: finalAnswerRecoveryMode,
       toolManifests: tools.values.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }
     )
   }
@@ -2065,7 +2095,29 @@ public final class ToolCallingAgent: @unchecked Sendable {
             await emit(limitedEvent.event)
             try await checkInterruption(cancellation, stepNumber: stepNumber)
           }
-          try await validateFinalAnswer(answer, task: task, providerEvents: validationEvents)
+          do {
+            try await validateFinalAnswer(answer, task: task, providerEvents: validationEvents)
+          } catch {
+            let rejectionMessage = recoverableFinalAnswerRejectionMessage(error)
+            await emit(
+              .init(
+                kind: .finalAnswerRejected,
+                stepNumber: stepNumber,
+                message: rejectionMessage,
+                errorType: String(reflecting: Swift.type(of: error)),
+                errorDescription: String(describing: error)
+              )
+            )
+
+            guard finalAnswerRecoveryMode == .recover, stepNumber < maxSteps else {
+              throw error
+            }
+
+            memory.addAssistantMessage(answer)
+            memory.addTask(rejectionMessage)
+            memory.addStep(.init(stepNumber: stepNumber, modelOutput: output))
+            continue
+          }
           memory.addAssistantMessage(answer)
           memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, isFinalAnswer: true))
           await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: answer))
@@ -2674,6 +2726,14 @@ public final class ToolCallingAgent: @unchecked Sendable {
     for validator in finalAnswerValidators {
       try await validator.validate(context)
     }
+  }
+
+  private func recoverableFinalAnswerRejectionMessage(_ error: any Error) -> String {
+    [
+      "Final answer was rejected by validation.",
+      "Error: \(String(describing: error)).",
+      "Revise the answer so it satisfies the validator and relies only on trusted task context."
+    ].joined(separator: " ")
   }
 
   private func emit(_ event: AgentEvent) async {
