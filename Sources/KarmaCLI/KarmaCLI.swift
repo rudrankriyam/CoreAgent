@@ -26,6 +26,7 @@ struct KarmaCLI {
       let receiptPath = arguments.removeOptionValue("--receipt")
       let maximumModelInputCharacters = arguments.removeOptionValue("--max-model-input-chars").flatMap(Int.init)
       let maximumToolOutputCharacters = arguments.removeOptionValue("--max-tool-output-chars").flatMap(Int.init)
+      let maximumContextMessages = arguments.removeOptionValue("--max-context-messages").flatMap(Int.init)
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
       let prompt = arguments.joined(separator: " ")
       let tools = enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : []
@@ -41,6 +42,7 @@ struct KarmaCLI {
           tools: tools,
           maximumModelInputCharacters: maximumModelInputCharacters,
           maximumToolOutputCharacters: maximumToolOutputCharacters,
+          maximumContextMessages: maximumContextMessages,
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential
         )
         return
@@ -74,7 +76,8 @@ struct KarmaCLI {
           retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
           limits: AgentLimits(
             maximumModelInputCharacters: maximumModelInputCharacters,
-            maximumToolOutputCharacters: maximumToolOutputCharacters
+            maximumToolOutputCharacters: maximumToolOutputCharacters,
+            maximumContextMessages: maximumContextMessages
           ),
           toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
           validatesToolNames: true
@@ -125,6 +128,7 @@ struct KarmaCLI {
     print("       karma --no-redaction --trace /tmp/karma-trace.json <prompt>")
     print("       karma --max-model-input-chars 12000 <prompt>")
     print("       karma --max-tool-output-chars 4000 --demo-tools <prompt>")
+    print("       karma --max-context-messages 12 --demo-tools <prompt>")
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
@@ -142,6 +146,7 @@ struct KarmaCLI {
     tools: [any Tool],
     maximumModelInputCharacters: Int?,
     maximumToolOutputCharacters: Int?,
+    maximumContextMessages: Int?,
     toolCallExecutionMode: ToolCallExecutionMode
   ) throws {
     let configuration = AgentConfiguration(
@@ -152,7 +157,8 @@ struct KarmaCLI {
       timeouts: .none,
       limits: AgentLimits(
         maximumModelInputCharacters: maximumModelInputCharacters,
-        maximumToolOutputCharacters: maximumToolOutputCharacters
+        maximumToolOutputCharacters: maximumToolOutputCharacters,
+        maximumContextMessages: maximumContextMessages
       ),
       toolCallExecutionMode: toolCallExecutionMode,
       toolManifests: try tools.map(ToolManifest.init(tool:)).sorted { $0.name < $1.name }

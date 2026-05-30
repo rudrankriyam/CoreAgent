@@ -265,7 +265,11 @@ import Foundation
     resetsMemoryBeforeRun: false,
     retryPolicy: RetryPolicy(maximumRetries: 2, delay: .milliseconds(5)),
     timeouts: AgentTimeouts(toolCall: .seconds(2)),
-    limits: AgentLimits(maximumModelInputCharacters: 1000, maximumToolOutputCharacters: 100),
+    limits: AgentLimits(
+      maximumModelInputCharacters: 1000,
+      maximumToolOutputCharacters: 100,
+      maximumContextMessages: 12
+    ),
     toolCallExecutionMode: .parallel
   )
   let configuration = try sourceAgent.configuration()
@@ -287,6 +291,7 @@ import Foundation
   #expect(rebuiltAgent.maxSteps == 3)
   #expect(rebuiltAgent.resetsMemoryBeforeRun == false)
   #expect(rebuiltAgent.limits.maximumToolOutputCharacters == 100)
+  #expect(rebuiltAgent.limits.maximumContextMessages == 12)
   #expect(rebuiltAgent.toolCallExecutionMode == .parallel)
 }
 
@@ -613,6 +618,7 @@ import Foundation
   #expect(metrics.toolCallCount == 1)
   #expect(metrics.toolResultCount == 1)
   #expect(metrics.limitedToolOutputCount == 1)
+  #expect(metrics.modelInputWindowedCount == 0)
   #expect(metrics.modelRetryCount == 0)
   #expect(metrics.partialResponseCount == 0)
   #expect(metrics.isInterrupted == false)
@@ -669,6 +675,7 @@ import Foundation
   let metrics = try JSONDecoder().decode(AgentRunMetrics.self, from: Data(json.utf8))
 
   #expect(metrics.stepCount == 1)
+  #expect(metrics.modelInputWindowedCount == 0)
   #expect(metrics.usage.totalTokens == nil)
 }
 
@@ -915,6 +922,59 @@ import Foundation
   #expect(await model.generateCallCount == 0)
   #expect(agent.memory.events.map(\.kind) == [.runStarted, .runFailed])
   #expect(agent.memory.events.last?.message?.contains("modelInputTooLarge") == true)
+}
+
+@Test func contextMessageLimitWindowsModelInputWithoutDroppingRunMemory() async throws {
+  let model = CapturingModel(outputs: [
+    .finalAnswer("first answer"),
+    .finalAnswer("second answer")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    resetsMemoryBeforeRun: false,
+    limits: AgentLimits(maximumContextMessages: 3)
+  )
+
+  _ = try await agent.run("First task")
+  let secondRun = try await agent.run("Second task")
+  let capturedMessages = await model.capturedMessages
+
+  #expect(capturedMessages.count == 2)
+  #expect(capturedMessages[1].map(\.role) == [.system, .assistant, .user])
+  #expect(capturedMessages[1].map(\.content) == [
+    "You are a helpful Swift agent. Use tools when useful, then return a final answer.",
+    "first answer",
+    "Second task"
+  ])
+  #expect(secondRun.messages.map(\.content).contains("First task"))
+  #expect(secondRun.messages.map(\.content).contains("first answer"))
+  #expect(secondRun.metrics.modelInputWindowedCount == 1)
+  #expect(secondRun.events.contains { $0.kind == .modelInputWindowed })
+}
+
+@Test func contextMessageLimitCanAvoidCharacterLimitFailureFromOlderMemory() async throws {
+  let model = CapturingModel(outputs: [
+    .finalAnswer(String(repeating: "large-memory ", count: 10)),
+    .finalAnswer("ok")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    resetsMemoryBeforeRun: false,
+    limits: AgentLimits(maximumModelInputCharacters: 160, maximumContextMessages: 2)
+  )
+
+  _ = try await agent.run("Remember a large answer")
+  let secondRun = try await agent.run("Small follow-up")
+  let capturedMessages = await model.capturedMessages
+
+  #expect(secondRun.finalAnswer == "ok")
+  #expect(capturedMessages[1].map(\.content) == [
+    "You are a helpful Swift agent. Use tools when useful, then return a final answer.",
+    "Small follow-up"
+  ])
+  #expect(secondRun.metrics.modelInputWindowedCount == 1)
 }
 
 @Test func streamingRunChecksModelInputLimitBeforeCallingModel() async throws {
@@ -1421,6 +1481,27 @@ private actor CountingModel: ModelProvider {
 
   func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
     generateCallCount += 1
+    return output
+  }
+}
+
+private actor CapturingModel: ModelProvider {
+  private let outputs: [ModelOutput]
+  private var index = 0
+  private(set) var capturedMessages: [[AgentMessage]] = []
+
+  init(outputs: [ModelOutput]) {
+    self.outputs = outputs
+  }
+
+  func generate(messages: [AgentMessage], tools: [any KarmaKit.Tool]) async throws -> ModelOutput {
+    capturedMessages.append(messages)
+    guard outputs.indices.contains(index) else {
+      return .finalAnswer("done")
+    }
+
+    let output = outputs[index]
+    index += 1
     return output
   }
 }

@@ -227,6 +227,7 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case toolCallStarted
   case toolCallFinished
   case toolOutputLimited
+  case modelInputWindowed
   case partialResponse
   case finalAnswerAccepted
   case runInterrupted
@@ -588,10 +589,16 @@ extension AgentTimeouts: Codable {
 public struct AgentLimits: Codable, Equatable, Sendable {
   public var maximumModelInputCharacters: Int?
   public var maximumToolOutputCharacters: Int?
+  public var maximumContextMessages: Int?
 
-  public init(maximumModelInputCharacters: Int? = nil, maximumToolOutputCharacters: Int? = nil) {
+  public init(
+    maximumModelInputCharacters: Int? = nil,
+    maximumToolOutputCharacters: Int? = nil,
+    maximumContextMessages: Int? = nil
+  ) {
     self.maximumModelInputCharacters = maximumModelInputCharacters
     self.maximumToolOutputCharacters = maximumToolOutputCharacters
+    self.maximumContextMessages = maximumContextMessages
   }
 
   public static let none = AgentLimits()
@@ -923,6 +930,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
   public var toolCallCount: Int
   public var toolResultCount: Int
   public var limitedToolOutputCount: Int
+  public var modelInputWindowedCount: Int
   public var partialResponseCount: Int
   public var isInterrupted: Bool
   public var isFailed: Bool
@@ -937,6 +945,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     case toolCallCount
     case toolResultCount
     case limitedToolOutputCount
+    case modelInputWindowedCount
     case modelRetryCount
     case partialResponseCount
     case isInterrupted
@@ -954,6 +963,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     toolCallCount: Int,
     toolResultCount: Int,
     limitedToolOutputCount: Int,
+    modelInputWindowedCount: Int = 0,
     partialResponseCount: Int,
     isInterrupted: Bool,
     isFailed: Bool,
@@ -968,6 +978,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
     self.toolCallCount = toolCallCount
     self.toolResultCount = toolResultCount
     self.limitedToolOutputCount = limitedToolOutputCount
+    self.modelInputWindowedCount = modelInputWindowedCount
     self.partialResponseCount = partialResponseCount
     self.isInterrupted = isInterrupted
     self.isFailed = isFailed
@@ -985,6 +996,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       toolCallCount: run.events.filter { $0.kind == .toolCallStarted }.count,
       toolResultCount: run.events.filter { $0.kind == .toolCallFinished }.count,
       limitedToolOutputCount: run.events.filter { $0.kind == .toolOutputLimited }.count,
+      modelInputWindowedCount: run.events.filter { $0.kind == .modelInputWindowed }.count,
       partialResponseCount: run.events.filter { $0.kind == .partialResponse }.count,
       isInterrupted: run.events.contains { $0.kind == .runInterrupted },
       isFailed: run.events.contains { $0.kind == .runFailed },
@@ -1004,6 +1016,7 @@ public struct AgentRunMetrics: Codable, Equatable, Sendable {
       toolCallCount: try container.decode(Int.self, forKey: .toolCallCount),
       toolResultCount: try container.decode(Int.self, forKey: .toolResultCount),
       limitedToolOutputCount: try container.decode(Int.self, forKey: .limitedToolOutputCount),
+      modelInputWindowedCount: try container.decodeIfPresent(Int.self, forKey: .modelInputWindowedCount) ?? 0,
       partialResponseCount: try container.decode(Int.self, forKey: .partialResponseCount),
       isInterrupted: try container.decode(Bool.self, forKey: .isInterrupted),
       isFailed: try container.decode(Bool.self, forKey: .isFailed),
@@ -1668,7 +1681,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
     onPartialResponse: (@Sendable (String) async -> Void)?
   ) async throws -> ModelOutput {
     let tools = Array(tools.values)
-    try enforceModelInputLimit(messages: memory.messages, tools: tools)
+    let messages = await modelInputMessages(stepNumber: stepNumber)
+    try enforceModelInputLimit(messages: messages, tools: tools)
     var attempt = 0
     var lastError: Error?
 
@@ -1677,7 +1691,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
         try await checkInterruption(cancellation, stepNumber: stepNumber)
         if let onPartialResponse, let streamingModel = model as? any StreamingModelProvider {
           return try await streamingModel.stream(
-            messages: memory.messages,
+            messages: messages,
             tools: tools,
             onPartialResponse: { partial in
               await onPartialResponse(partial)
@@ -1686,7 +1700,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
           )
         }
 
-        return try await model.generate(messages: memory.messages, tools: tools)
+        return try await model.generate(messages: messages, tools: tools)
       } catch {
         lastError = error
         guard attempt < retryPolicy.maximumRetries else {
@@ -1702,6 +1716,32 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     throw KarmaError.retryLimitExceeded(attempts: attempt, reason: String(describing: lastError))
+  }
+
+  private func modelInputMessages(stepNumber: Int) async -> [AgentMessage] {
+    guard let maximumMessages = limits.maximumContextMessages else {
+      return memory.messages
+    }
+
+    let safeMaximum = max(2, maximumMessages)
+    guard memory.messages.count > safeMaximum else {
+      return memory.messages
+    }
+
+    let systemMessage = memory.messages.first { $0.role == .system }
+    let nonSystemMessages = memory.messages.filter { $0.role != .system }
+    let retainedNonSystemCount = max(0, safeMaximum - (systemMessage == nil ? 0 : 1))
+    let retainedNonSystemMessages = Array(nonSystemMessages.suffix(retainedNonSystemCount))
+    let messages = systemMessage.map { [$0] + retainedNonSystemMessages } ?? retainedNonSystemMessages
+
+    await emit(
+      .init(
+        kind: .modelInputWindowed,
+        stepNumber: stepNumber,
+        message: "Model input windowed from \(memory.messages.count) to \(messages.count) messages."
+      )
+    )
+    return messages
   }
 
   private func checkInterruption(_ cancellation: AgentCancellation?, stepNumber: Int? = nil) async throws {
