@@ -620,6 +620,32 @@ import Foundation
   #expect(first.digest != second.digest)
 }
 
+@Test func toolManifestDigestChangesWhenTrustIdentityChanges() throws {
+  let first = try ToolManifest(
+    name: "lookup",
+    description: "Looks up public data.",
+    inputs: [:],
+    trustIdentity: ToolTrustIdentity(
+      serverID: "weather-service",
+      endpoint: "https://weather.example.com/tools",
+      keyFingerprint: "sha256:one"
+    )
+  )
+  let second = try ToolManifest(
+    name: "lookup",
+    description: "Looks up public data.",
+    inputs: [:],
+    trustIdentity: ToolTrustIdentity(
+      serverID: "weather-service",
+      endpoint: "https://weather.example.com/tools",
+      keyFingerprint: "sha256:two"
+    )
+  )
+
+  #expect(first.digest.count == 64)
+  #expect(first.digest != second.digest)
+}
+
 @Test func toolManifestRedactionCleansDescriptionsAndNestedInputs() throws {
   let manifest = try ToolManifest(
     name: "send",
@@ -647,6 +673,29 @@ import Foundation
   #expect(!json.contains("payload-secret"))
   #expect(!json.contains("array-secret"))
   #expect(!json.contains("item-secret"))
+  #expect(json.contains("[REDACTED]"))
+  #expect(redacted.digest != manifest.digest)
+}
+
+@Test func toolManifestRedactionCleansTrustIdentity() throws {
+  let manifest = try ToolManifest(
+    name: "lookup",
+    description: "Looks up public data.",
+    inputs: [:],
+    trustIdentity: ToolTrustIdentity(
+      serverID: "server token=server-secret",
+      endpoint: "https://example.com/tools?api_key=endpoint-secret",
+      keyFingerprint: "private_key=fingerprint-secret"
+    )
+  )
+
+  let redacted = try manifest.redacted()
+  let data = try JSONEncoder().encode(redacted)
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(!json.contains("server-secret"))
+  #expect(!json.contains("endpoint-secret"))
+  #expect(!json.contains("fingerprint-secret"))
   #expect(json.contains("[REDACTED]"))
   #expect(redacted.digest != manifest.digest)
 }
@@ -693,6 +742,74 @@ import Foundation
 
   await #expect(throws: KarmaError.untrustedTool(name: "lookup", digest: changedDigest)) {
     _ = try await agent.run("Use lookup")
+  }
+}
+
+@Test func trustedExternalToolExecutionPolicyAllowsApprovedIdentity() async throws {
+  let identity = ToolTrustIdentity(
+    serverID: "weather-service",
+    endpoint: "https://weather.example.com/tools",
+    keyFingerprint: "sha256:weather"
+  )
+  let tool = TrustedNetworkTool(
+    name: "forecast",
+    description: "Reads weather data.",
+    trustIdentity: identity
+  ) { _ in
+    "sunny"
+  }
+  let manifest = try ToolManifest(tool: tool)
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "forecast")]),
+    .finalAnswer("sunny")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    toolExecutionPolicy: TrustedExternalToolExecutionPolicy(approvedManifests: [manifest])
+  )
+
+  let run = try await agent.run("Use forecast")
+  let authorizedEvent = run.events.first { $0.kind == .toolCallAuthorized }
+
+  #expect(run.finalAnswer == "sunny")
+  #expect(authorizedEvent?.toolManifest?.trustIdentity == identity)
+  #expect(run.metrics.toolAuthorizationCount == 1)
+}
+
+@Test func trustedExternalToolExecutionPolicyRejectsUnapprovedIdentity() async throws {
+  let approved = ToolTrustIdentity(
+    serverID: "weather-service",
+    endpoint: "https://weather.example.com/tools",
+    keyFingerprint: "sha256:weather"
+  )
+  let unapproved = ToolTrustIdentity(
+    serverID: "weather-service",
+    endpoint: "https://other.example.com/tools",
+    keyFingerprint: "sha256:other"
+  )
+  let tool = TrustedNetworkTool(
+    name: "forecast",
+    description: "Reads weather data.",
+    trustIdentity: unapproved
+  ) { _ in
+    "rain"
+  }
+  let manifest = try ToolManifest(tool: tool)
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(name: "forecast")])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    toolExecutionPolicy: TrustedExternalToolExecutionPolicy(
+      approvedDigests: [manifest.digest],
+      approvedIdentities: [approved]
+    )
+  )
+
+  await #expect(throws: KarmaError.untrustedToolIdentity(name: "forecast", serverID: "weather-service")) {
+    _ = try await agent.run("Use forecast")
   }
 }
 
@@ -2912,6 +3029,30 @@ private struct DenyToolExecutionPolicy: ToolExecutionPolicy {
     if context.call.name == deniedToolName {
       throw PolicyError.denied(context.call.name)
     }
+  }
+}
+
+private struct TrustedNetworkTool: ToolTrustDescribing {
+  var name: String
+  var description: String
+  var inputs: [String: ToolInput] = [:]
+  var trustIdentity: ToolTrustIdentity
+  private let handler: @Sendable ([String: String]) async throws -> String
+
+  init(
+    name: String,
+    description: String,
+    trustIdentity: ToolTrustIdentity,
+    handler: @escaping @Sendable ([String: String]) async throws -> String
+  ) {
+    self.name = name
+    self.description = description
+    self.trustIdentity = trustIdentity
+    self.handler = handler
+  }
+
+  func call(arguments: [String: String]) async throws -> String {
+    try await handler(arguments)
   }
 }
 

@@ -13,6 +13,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case persistenceFailed(String)
   case maxStepsReached(Int)
   case untrustedTool(name: String, digest: String)
+  case untrustedToolIdentity(name: String, serverID: String)
   case modelInputTooLarge(characters: Int, maximum: Int)
   case interrupted(reason: String)
   case configurationMismatch(String)
@@ -138,23 +139,27 @@ public struct ToolManifest: Codable, Equatable, Sendable {
   public var description: String
   public var outputDescription: String?
   public var inputs: [String: ToolInput]
+  public var trustIdentity: ToolTrustIdentity?
   public var digest: String
 
   public init(
     name: String,
     description: String,
     outputDescription: String? = nil,
-    inputs: [String: ToolInput]
+    inputs: [String: ToolInput],
+    trustIdentity: ToolTrustIdentity? = nil
   ) throws {
     self.name = name
     self.description = description
     self.outputDescription = outputDescription
     self.inputs = inputs
+    self.trustIdentity = trustIdentity
     self.digest = try Self.digest(
       name: name,
       description: description,
       outputDescription: outputDescription,
-      inputs: inputs
+      inputs: inputs,
+      trustIdentity: trustIdentity
     )
   }
 
@@ -163,7 +168,8 @@ public struct ToolManifest: Codable, Equatable, Sendable {
       name: tool.name,
       description: tool.description,
       outputDescription: (tool as? any ToolOutputDescribing)?.outputDescription,
-      inputs: tool.inputs
+      inputs: tool.inputs,
+      trustIdentity: (tool as? any ToolTrustDescribing)?.trustIdentity
     )
   }
 
@@ -174,7 +180,8 @@ public struct ToolManifest: Codable, Equatable, Sendable {
       outputDescription: outputDescription.map(policy.redact),
       inputs: inputs.reduce(into: [String: ToolInput]()) { partialResult, pair in
         partialResult[pair.key] = pair.value.redacted(using: policy)
-      }
+      },
+      trustIdentity: trustIdentity?.redacted(using: policy)
     )
   }
 
@@ -182,7 +189,8 @@ public struct ToolManifest: Codable, Equatable, Sendable {
     name: String,
     description: String,
     outputDescription: String?,
-    inputs: [String: ToolInput]
+    inputs: [String: ToolInput],
+    trustIdentity: ToolTrustIdentity?
   ) throws -> String {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -190,7 +198,8 @@ public struct ToolManifest: Codable, Equatable, Sendable {
       name: name,
       description: description,
       outputDescription: outputDescription,
-      inputs: inputs
+      inputs: inputs,
+      trustIdentity: trustIdentity
     )
     return SHA256.hash(data: try encoder.encode(payload))
       .map { String(format: "%02x", $0) }
@@ -203,6 +212,27 @@ private struct ToolManifestPayload: Codable {
   var description: String
   var outputDescription: String?
   var inputs: [String: ToolInput]
+  var trustIdentity: ToolTrustIdentity?
+}
+
+public struct ToolTrustIdentity: Codable, Equatable, Hashable, Sendable {
+  public var serverID: String
+  public var endpoint: String
+  public var keyFingerprint: String?
+
+  public init(serverID: String, endpoint: String, keyFingerprint: String? = nil) {
+    self.serverID = serverID
+    self.endpoint = endpoint
+    self.keyFingerprint = keyFingerprint
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> ToolTrustIdentity {
+    ToolTrustIdentity(
+      serverID: policy.redact(serverID),
+      endpoint: policy.redact(endpoint),
+      keyFingerprint: keyFingerprint.map(policy.redact)
+    )
+  }
 }
 
 public struct ToolExecutionContext: Equatable, Sendable {
@@ -489,6 +519,10 @@ public protocol ToolOutputDescribing: Tool {
   var outputDescription: String? { get }
 }
 
+public protocol ToolTrustDescribing: Tool {
+  var trustIdentity: ToolTrustIdentity { get }
+}
+
 public protocol ToolExecutionPolicy: Sendable {
   func authorize(_ context: ToolExecutionContext) async throws
 }
@@ -515,6 +549,37 @@ public struct TrustedToolExecutionPolicy: ToolExecutionPolicy {
       throw KarmaError.untrustedTool(
         name: context.call.name,
         digest: context.toolManifest?.digest ?? "missing-manifest"
+      )
+    }
+  }
+}
+
+public struct TrustedExternalToolExecutionPolicy: ToolExecutionPolicy {
+  public var approvedDigests: Set<String>
+  public var approvedIdentities: Set<ToolTrustIdentity>
+
+  public init(approvedDigests: Set<String>, approvedIdentities: Set<ToolTrustIdentity>) {
+    self.approvedDigests = approvedDigests
+    self.approvedIdentities = approvedIdentities
+  }
+
+  public init(approvedManifests: [ToolManifest]) {
+    self.approvedDigests = Set(approvedManifests.map(\.digest))
+    self.approvedIdentities = Set(approvedManifests.compactMap(\.trustIdentity))
+  }
+
+  public func authorize(_ context: ToolExecutionContext) async throws {
+    guard let manifest = context.toolManifest, approvedDigests.contains(manifest.digest) else {
+      throw KarmaError.untrustedTool(
+        name: context.call.name,
+        digest: context.toolManifest?.digest ?? "missing-manifest"
+      )
+    }
+
+    guard let identity = manifest.trustIdentity, approvedIdentities.contains(identity) else {
+      throw KarmaError.untrustedToolIdentity(
+        name: context.call.name,
+        serverID: manifest.trustIdentity?.serverID ?? "missing-identity"
       )
     }
   }

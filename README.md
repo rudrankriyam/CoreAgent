@@ -83,6 +83,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ToolExecutionPolicy`: authorizes tool calls before execution.
 - `toolCallAuthorized` and `toolCallDenied`: record policy decisions before tool execution.
 - `TrustedToolExecutionPolicy`: only allows tools with approved manifest digests.
+- `TrustedExternalToolExecutionPolicy`: only allows external tools with approved manifests and trust identities.
 - `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
 - `PromptInjectionShieldValidator`: rejects answers that repeat untrusted tool-output instructions.
 - `ManagedAgentTool`: exposes an agent as a callable tool.
