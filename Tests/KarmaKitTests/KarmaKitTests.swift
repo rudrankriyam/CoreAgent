@@ -1754,6 +1754,7 @@ import Foundation
   let model = CapturingModel(outputs: [.finalAnswer("done")])
   let provider = StaticAgentContextProvider(
     name: "project_context",
+    description: "Project context.",
     messages: [
       AgentMessage(role: .system, content: "Project fact: KarmaKit uses Foundation Models.")
     ]
@@ -1768,7 +1769,40 @@ import Foundation
   #expect(capturedMessages.first?.content.contains("Project fact: KarmaKit uses Foundation Models.") == true)
   #expect(capturedMessages.last?.content == "Continue")
   #expect(!run.messages.contains { $0.content == "Project fact: KarmaKit uses Foundation Models." })
+  #expect(run.events.contains { $0.kind == .contextProviderAuthorized && $0.contextProviderManifest?.name == "project_context" })
   #expect(run.events.contains { $0.kind == .contextProvided && $0.message?.contains("project_context") == true })
+}
+
+@Test func trustedContextProviderPolicyRejectsChangedProviderBeforeGeneration() async throws {
+  let approvedProvider = StaticAgentContextProvider(
+    name: "project_context",
+    description: "Approved context.",
+    messages: [AgentMessage(role: .system, content: "approved")]
+  )
+  let changedProvider = StaticAgentContextProvider(
+    name: "project_context",
+    description: "Changed context.",
+    messages: [AgentMessage(role: .system, content: "changed")]
+  )
+  let changedManifest = try AgentContextProviderManifest(provider: changedProvider)
+  let model = CapturingModel(outputs: [.finalAnswer("unexpected")])
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    contextProviders: [changedProvider],
+    contextProviderExecutionPolicy: TrustedAgentContextProviderExecutionPolicy(
+      approvedManifests: [try AgentContextProviderManifest(provider: approvedProvider)]
+    )
+  )
+
+  await #expect(throws: KarmaError.untrustedContextProvider(name: "project_context", digest: changedManifest.digest)) {
+    _ = try await agent.run("Continue")
+  }
+
+  #expect(await model.capturedMessages.isEmpty)
+  #expect(agent.memory.events.contains {
+    $0.kind == .contextProviderDenied && $0.contextProviderManifest == changedManifest
+  })
 }
 
 @Test func contextProviderFailureStopsBeforeModelGeneration() async throws {
@@ -1781,6 +1815,7 @@ import Foundation
   }
 
   #expect(await model.capturedMessages.isEmpty)
+  #expect(agent.memory.events.contains { $0.kind == .contextProviderAuthorized && $0.contextProviderManifest?.name == "broken_context" })
   #expect(agent.memory.events.contains { $0.kind == .contextProviderFailed && $0.message?.contains("broken_context") == true })
   #expect(agent.memory.events.last?.kind == .runFailed)
 }

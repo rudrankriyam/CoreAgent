@@ -15,6 +15,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case untrustedTool(name: String, digest: String)
   case untrustedToolIdentity(name: String, serverID: String)
   case toolDenied(name: String, reason: String)
+  case untrustedContextProvider(name: String, digest: String)
   case tooManyToolCalls(stepNumber: Int, requested: Int, maximum: Int)
   case modelInputTooLarge(characters: Int, maximum: Int)
   case interrupted(reason: String)
@@ -209,6 +210,39 @@ public struct ToolManifest: Codable, Equatable, Sendable {
   }
 }
 
+public struct AgentContextProviderManifest: Codable, Equatable, Sendable {
+  public var name: String
+  public var description: String?
+  public var digest: String
+
+  public init(name: String, description: String? = nil) throws {
+    self.name = name
+    self.description = description
+    self.digest = try Self.digest(name: name, description: description)
+  }
+
+  public init(provider: any AgentContextProvider) throws {
+    try self.init(name: provider.name, description: (provider as? any AgentContextProviderDescribing)?.description)
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) throws -> AgentContextProviderManifest {
+    try AgentContextProviderManifest(name: policy.redact(name), description: description.map(policy.redact))
+  }
+
+  private static func digest(name: String, description: String?) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    return SHA256.hash(data: try encoder.encode(AgentContextProviderManifestPayload(name: name, description: description)))
+      .map { String(format: "%02x", $0) }
+      .joined()
+  }
+}
+
+private struct AgentContextProviderManifestPayload: Codable {
+  var name: String
+  var description: String?
+}
+
 private struct ToolManifestPayload: Codable {
   var name: String
   var description: String
@@ -317,6 +351,8 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case toolCallFinished
   case toolCallFailed
   case toolOutputLimited
+  case contextProviderAuthorized
+  case contextProviderDenied
   case contextProvided
   case contextProviderFailed
   case modelInputWindowed
@@ -353,6 +389,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
   public var toolCall: ToolCall?
   public var toolResult: ToolResult?
   public var toolManifest: ToolManifest?
+  public var contextProviderManifest: AgentContextProviderManifest?
   public var managedRun: ManagedAgentRunReport?
   public var trace: AgentEventTrace?
 
@@ -365,6 +402,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     toolCall: ToolCall? = nil,
     toolResult: ToolResult? = nil,
     toolManifest: ToolManifest? = nil,
+    contextProviderManifest: AgentContextProviderManifest? = nil,
     managedRun: ManagedAgentRunReport? = nil,
     trace: AgentEventTrace? = nil
   ) {
@@ -376,6 +414,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
     self.toolCall = toolCall
     self.toolResult = toolResult
     self.toolManifest = toolManifest
+    self.contextProviderManifest = contextProviderManifest
     self.managedRun = managedRun
     self.trace = trace
   }
@@ -390,6 +429,7 @@ public struct AgentEvent: Codable, Equatable, Sendable {
       toolCall: toolCall?.redacted(using: policy),
       toolResult: toolResult?.redacted(using: policy),
       toolManifest: toolManifest,
+      contextProviderManifest: try? contextProviderManifest?.redacted(using: policy),
       managedRun: managedRun?.redacted(using: policy),
       trace: trace
     )
@@ -1142,12 +1182,46 @@ public protocol AgentContextProvider: Sendable {
   func contextMessages(_ context: AgentContextProviderContext) async throws -> [AgentMessage]
 }
 
-public struct StaticAgentContextProvider: AgentContextProvider {
+public protocol AgentContextProviderDescribing: AgentContextProvider {
+  var description: String { get }
+}
+
+public protocol AgentContextProviderExecutionPolicy: Sendable {
+  func authorize(_ manifest: AgentContextProviderManifest, context: AgentContextProviderContext) async throws
+}
+
+public struct AllowAllAgentContextProviderExecutionPolicy: AgentContextProviderExecutionPolicy {
+  public init() {}
+
+  public func authorize(_ manifest: AgentContextProviderManifest, context: AgentContextProviderContext) async throws {}
+}
+
+public struct TrustedAgentContextProviderExecutionPolicy: AgentContextProviderExecutionPolicy {
+  public var approvedDigests: Set<String>
+
+  public init(approvedDigests: Set<String>) {
+    self.approvedDigests = approvedDigests
+  }
+
+  public init(approvedManifests: [AgentContextProviderManifest]) {
+    self.approvedDigests = Set(approvedManifests.map(\.digest))
+  }
+
+  public func authorize(_ manifest: AgentContextProviderManifest, context: AgentContextProviderContext) async throws {
+    guard approvedDigests.contains(manifest.digest) else {
+      throw KarmaError.untrustedContextProvider(name: manifest.name, digest: manifest.digest)
+    }
+  }
+}
+
+public struct StaticAgentContextProvider: AgentContextProviderDescribing {
   public var name: String
+  public var description: String
   public var messages: [AgentMessage]
 
-  public init(name: String, messages: [AgentMessage]) {
+  public init(name: String, description: String = "Static agent context provider.", messages: [AgentMessage]) {
     self.name = name
+    self.description = description
     self.messages = messages
   }
 
@@ -2494,8 +2568,8 @@ private struct AgentTraceContext {
     switch event.kind {
     case .runStarted:
       return "run"
-    case .modelOutput, .modelRetry, .partialResponse, .contextProvided, .contextProviderFailed,
-         .modelInputWindowed, .modelInputNormalized, .memoryCompacted:
+    case .modelOutput, .modelRetry, .partialResponse, .contextProviderAuthorized, .contextProviderDenied,
+         .contextProvided, .contextProviderFailed, .modelInputWindowed, .modelInputNormalized, .memoryCompacted:
       return modelSpanID(stepNumber: event.stepNumber)
     case .memoryRebased:
       return "run.memory.rebase"
@@ -2524,8 +2598,8 @@ private struct AgentTraceContext {
     switch event.kind {
     case .runStarted:
       return nil
-    case .modelOutput, .modelRetry, .partialResponse, .contextProvided, .contextProviderFailed,
-         .modelInputWindowed, .modelInputNormalized, .memoryRebased, .memoryCompacted:
+    case .modelOutput, .modelRetry, .partialResponse, .contextProviderAuthorized, .contextProviderDenied,
+         .contextProvided, .contextProviderFailed, .modelInputWindowed, .modelInputNormalized, .memoryRebased, .memoryCompacted:
       return "run"
     case .toolCallAuthorized, .toolCallDenied, .toolCallStarted, .toolCallFinished, .toolCallFailed, .toolOutputLimited:
       return modelSpanID(stepNumber: event.stepNumber)
@@ -2565,6 +2639,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let finalAnswerValidators: [any FinalAnswerValidator]
   public let observers: [any AgentObserver]
   public let contextProviders: [any AgentContextProvider]
+  public let contextProviderExecutionPolicy: any AgentContextProviderExecutionPolicy
   public let resetsMemoryBeforeRun: Bool
   public let retryPolicy: RetryPolicy
   public let timeouts: AgentTimeouts
@@ -2592,6 +2667,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     ],
     observers: [any AgentObserver] = [],
     contextProviders: [any AgentContextProvider] = [],
+    contextProviderExecutionPolicy: any AgentContextProviderExecutionPolicy = AllowAllAgentContextProviderExecutionPolicy(),
     resetsMemoryBeforeRun: Bool = true,
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
@@ -2617,6 +2693,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.finalAnswerValidators = finalAnswerValidators
     self.observers = observers
     self.contextProviders = contextProviders
+    self.contextProviderExecutionPolicy = contextProviderExecutionPolicy
     self.resetsMemoryBeforeRun = resetsMemoryBeforeRun
     self.retryPolicy = retryPolicy
     self.timeouts = timeouts
@@ -2641,6 +2718,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     ],
     observers: [any AgentObserver] = [],
     contextProviders: [any AgentContextProvider] = [],
+    contextProviderExecutionPolicy: any AgentContextProviderExecutionPolicy = AllowAllAgentContextProviderExecutionPolicy(),
     memoryStore: (any AgentMemoryStore)? = nil,
     conversationCompactor: any ConversationCompactor = ExcerptConversationCompactor()
   ) throws {
@@ -2656,6 +2734,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       finalAnswerValidators: finalAnswerValidators,
       observers: observers,
       contextProviders: contextProviders,
+      contextProviderExecutionPolicy: contextProviderExecutionPolicy,
       resetsMemoryBeforeRun: configuration.resetsMemoryBeforeRun,
       retryPolicy: configuration.retryPolicy,
       timeouts: configuration.timeouts,
@@ -2681,6 +2760,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     ],
     observers: [any AgentObserver] = [],
     contextProviders: [any AgentContextProvider] = [],
+    contextProviderExecutionPolicy: any AgentContextProviderExecutionPolicy = AllowAllAgentContextProviderExecutionPolicy(),
     resetsMemoryBeforeRun: Bool = true,
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
@@ -2711,6 +2791,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       finalAnswerValidators: finalAnswerValidators,
       observers: observers,
       contextProviders: contextProviders,
+      contextProviderExecutionPolicy: contextProviderExecutionPolicy,
       resetsMemoryBeforeRun: resetsMemoryBeforeRun,
       retryPolicy: retryPolicy,
       timeouts: timeouts,
@@ -3768,6 +3849,31 @@ public final class ToolCallingAgent: @unchecked Sendable {
     var providedContextMessages: [AgentMessage] = []
     let context = AgentContextProviderContext(task: task, stepNumber: stepNumber, memory: memory)
     for provider in contextProviders {
+      let manifest = try AgentContextProviderManifest(provider: provider)
+      do {
+        try await contextProviderExecutionPolicy.authorize(manifest, context: context)
+        await emit(
+          .init(
+            kind: .contextProviderAuthorized,
+            stepNumber: stepNumber,
+            message: "Context provider authorized.",
+            contextProviderManifest: manifest
+          )
+        )
+      } catch {
+        await emit(
+          .init(
+            kind: .contextProviderDenied,
+            stepNumber: stepNumber,
+            message: String(describing: error),
+            errorType: String(reflecting: Swift.type(of: error)),
+            errorDescription: String(describing: error),
+            contextProviderManifest: manifest
+          )
+        )
+        throw error
+      }
+
       do {
         let providedMessages = try await provider.contextMessages(context)
         guard !providedMessages.isEmpty else {
@@ -3779,7 +3885,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
           .init(
             kind: .contextProvided,
             stepNumber: stepNumber,
-            message: "Context provider '\(provider.name)' added \(providedMessages.count) messages."
+            message: "Context provider '\(provider.name)' added \(providedMessages.count) messages.",
+            contextProviderManifest: manifest
           )
         )
       } catch {
@@ -3789,7 +3896,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
             stepNumber: stepNumber,
             message: "Context provider '\(provider.name)' failed: \(String(describing: error))",
             errorType: String(reflecting: Swift.type(of: error)),
-            errorDescription: String(describing: error)
+            errorDescription: String(describing: error),
+            contextProviderManifest: manifest
           )
         )
         throw error
