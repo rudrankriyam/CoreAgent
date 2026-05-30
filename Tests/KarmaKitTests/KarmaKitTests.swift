@@ -1297,6 +1297,25 @@ import Foundation
   }
 }
 
+@Test func foundationToolAdapterRecordsToolFailures() async throws {
+  if #available(macOS 26.0, *) {
+    let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
+      throw ToolFailureError.offline
+    }
+    let audit = FoundationModelToolAudit()
+    let adapter = try FoundationModelToolAdapter(tool: tool, task: "Use lookup", audit: audit)
+
+    await #expect(throws: ToolFailureError.offline) {
+      _ = try await adapter.call(arguments: GeneratedContent(properties: [:]))
+    }
+    let events = await audit.events()
+
+    #expect(events.map(\.kind) == [.toolCallAuthorized, .toolCallFailed])
+    #expect(events.last?.toolCall?.name == "lookup")
+    #expect(events.last?.errorDescription == "offline")
+  }
+}
+
 @Test func foundationToolAdapterConvertsTypedArgumentsToStrings() async throws {
   if #available(macOS 26.0, *) {
     let tool = ClosureTool(

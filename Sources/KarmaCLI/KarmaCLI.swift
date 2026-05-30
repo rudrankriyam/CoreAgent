@@ -37,12 +37,14 @@ struct KarmaCLI {
       let modelTimeoutSeconds = arguments.removeOptionValue("--model-timeout-seconds").flatMap(Double.init)
       let runTimeoutSeconds = arguments.removeOptionValue("--run-timeout-seconds").flatMap(Double.init)
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
+      let allowedURLHosts = arguments.removeOptionValues("--allow-url-host")
       let deniedToolNames = Set(arguments.removeOptionValues("--deny-tool"))
       let prompt = arguments.joined(separator: " ")
       let tools = makeTools(
         enablesDemoTools: enablesDemoTools,
         enablesActionOnly: enablesActionOnly,
-        allowedFileDirectories: allowedFileDirectories
+        allowedFileDirectories: allowedFileDirectories,
+        allowedURLHosts: allowedURLHosts
       )
       let redactionPolicy: AgentRedactionPolicy = disablesRedaction ? .none : .standard
       let completionMode: AgentCompletionMode = enablesActionOnly ? .actionOnly(doneToolName: "done") : .finalAnswer
@@ -213,17 +215,22 @@ struct KarmaCLI {
     print("       karma --demo-tools --deny-tool calculate <prompt>")
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
+    print("       karma --demo-tools --allow-url-host example.com <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
   }
 
   private static func makeTools(
     enablesDemoTools: Bool,
     enablesActionOnly: Bool,
-    allowedFileDirectories: [String]
+    allowedFileDirectories: [String],
+    allowedURLHosts: [String]
   ) -> [any Tool] {
     var tools: [any Tool] = enablesDemoTools
       ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories)
       : []
+    if !allowedURLHosts.isEmpty {
+      tools.append(URLFetchTool(allowedHosts: Set(allowedURLHosts)))
+    }
     if enablesActionOnly {
       tools.append(ActionCompletionTool())
     }

@@ -33,6 +33,78 @@ import KarmaKit
   }
 }
 
+@Test func urlFetchToolFetchesAllowedPublicURLThroughClient() async throws {
+  let client = URLClientProbe(response: URLFetchTool.Response(statusCode: 200, body: Data("hello web".utf8)))
+  let tool = URLFetchTool(client: client.fetch)
+
+  let output = try await tool.call(arguments: ["url": "https://example.com/context.txt"])
+
+  #expect(output == "hello web")
+  #expect(await client.requestedURLs == ["https://example.com/context.txt"])
+  #expect(await client.timeoutSeconds == [20])
+}
+
+@Test func urlFetchToolRejectsNonHTTPSByDefault() async throws {
+  let tool = URLFetchTool()
+
+  await #expect(throws: KarmaToolError.urlSchemeNotAllowed("http")) {
+    _ = try await tool.call(arguments: ["url": "http://example.com"])
+  }
+}
+
+@Test func urlFetchToolCanAllowHTTPExplicitly() async throws {
+  let client = URLClientProbe(response: URLFetchTool.Response(statusCode: 200, body: Data("ok".utf8)))
+  let tool = URLFetchTool(allowedSchemes: ["http", "https"], client: client.fetch)
+
+  let output = try await tool.call(arguments: ["url": "http://example.com"])
+
+  #expect(output == "ok")
+  #expect(await client.requestedURLs == ["http://example.com"])
+}
+
+@Test func urlFetchToolRejectsHostsOutsideAllowlist() async throws {
+  let tool = URLFetchTool(allowedHosts: ["example.com"])
+
+  await #expect(throws: KarmaToolError.urlHostNotAllowed("evil.example")) {
+    _ = try await tool.call(arguments: ["url": "https://evil.example"])
+  }
+}
+
+@Test func urlFetchToolRejectsLocalhostAndPrivateNetworks() async throws {
+  let tool = URLFetchTool(allowedSchemes: ["http", "https"])
+
+  for blockedURL in [
+    "https://localhost",
+    "http://127.0.0.1:8080",
+    "http://10.0.0.5",
+    "http://172.16.4.2",
+    "http://192.168.1.10",
+    "http://169.254.169.254/latest/meta-data",
+    "http://[::1]/",
+    "http://[fd00::1]/"
+  ] {
+    await #expect(throws: KarmaToolError.urlHostBlocked(URLComponents(string: blockedURL)?.host?.lowercased() ?? "")) {
+      _ = try await tool.call(arguments: ["url": blockedURL])
+    }
+  }
+}
+
+@Test func urlFetchToolRejectsLargeResponsesAndBadStatuses() async throws {
+  let largeClient = URLClientProbe(response: URLFetchTool.Response(statusCode: 200, body: Data("abcdef".utf8)))
+  let largeTool = URLFetchTool(maximumBytes: 3, client: largeClient.fetch)
+
+  await #expect(throws: KarmaToolError.responseTooLarge(url: "https://example.com", maximumBytes: 3)) {
+    _ = try await largeTool.call(arguments: ["url": "https://example.com"])
+  }
+
+  let statusClient = URLClientProbe(response: URLFetchTool.Response(statusCode: 500, body: Data("nope".utf8)))
+  let statusTool = URLFetchTool(client: statusClient.fetch)
+
+  await #expect(throws: KarmaToolError.invalidHTTPStatus(url: "https://example.com", statusCode: 500)) {
+    _ = try await statusTool.call(arguments: ["url": "https://example.com"])
+  }
+}
+
 @Test func fileReadToolReadsAllowedFile() async throws {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent("KarmaKitToolsTests-\(UUID().uuidString)")
@@ -172,6 +244,22 @@ import KarmaKit
 
   #expect(run.steps.first?.toolResults.first?.output.contains("KarmaKit has local search.") == true)
   #expect(run.finalAnswer == "Found local search context.")
+}
+
+private actor URLClientProbe {
+  private let response: URLFetchTool.Response
+  private(set) var requestedURLs: [String] = []
+  private(set) var timeoutSeconds: [Double] = []
+
+  init(response: URLFetchTool.Response) {
+    self.response = response
+  }
+
+  func fetch(url: URL, timeoutSeconds: Double) async throws -> URLFetchTool.Response {
+    requestedURLs.append(url.absoluteString)
+    self.timeoutSeconds.append(timeoutSeconds)
+    return response
+  }
 }
 
 private func makeTemporaryDirectory() throws -> URL {

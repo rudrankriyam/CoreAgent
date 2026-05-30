@@ -60,6 +60,7 @@ swift run karma --structured-demo "Summarize Foundation Models agents."
 swift run karma --demo-tools "Use calculate to evaluate 2 + 3 * 5. Return only the result."
 swift run karma --demo-tools --allow-file-dir /tmp "Read /tmp/example.txt and summarize it."
 swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agents and summarize the matches."
+swift run karma --demo-tools --allow-url-host example.com "Fetch https://example.com and summarize it."
 ```
 
 ## Current Foundation
@@ -113,6 +114,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `AgentReceiptExporter`: writes and verifies tamper-evident run receipts.
 - `FoundationModelSchemaAdapter`: builds nested Foundation Models schemas from KarmaKit tool inputs.
 - `KarmaKitTools`: reusable tools for current time, arithmetic, whitelisted file reads, and local text search.
+- `URLFetchTool`: fetches allowlisted public HTTP(S) URLs with SSRF checks, timeout, status, and size limits.
 
 ## Roadmap
 

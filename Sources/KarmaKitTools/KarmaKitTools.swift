@@ -5,7 +5,13 @@ public enum KarmaToolError: Error, CustomStringConvertible, Equatable, Sendable 
   case missingArgument(String)
   case invalidPath(String)
   case pathNotAllowed(String)
+  case invalidURL(String)
+  case urlSchemeNotAllowed(String)
+  case urlHostNotAllowed(String)
+  case urlHostBlocked(String)
   case fileTooLarge(path: String, maximumBytes: Int)
+  case responseTooLarge(url: String, maximumBytes: Int)
+  case invalidHTTPStatus(url: String, statusCode: Int)
   case queryTooShort
   case unsupportedExpression(String)
   case divisionByZero
@@ -18,8 +24,20 @@ public enum KarmaToolError: Error, CustomStringConvertible, Equatable, Sendable 
       return "Invalid path '\(path)'."
     case .pathNotAllowed(let path):
       return "Path is outside the allowed directories: \(path)"
+    case .invalidURL(let url):
+      return "Invalid URL: \(url)"
+    case .urlSchemeNotAllowed(let scheme):
+      return "URL scheme is not allowed: \(scheme)"
+    case .urlHostNotAllowed(let host):
+      return "URL host is not allowed: \(host)"
+    case .urlHostBlocked(let host):
+      return "URL host is blocked: \(host)"
     case .fileTooLarge(let path, let maximumBytes):
       return "File exceeds \(maximumBytes) bytes: \(path)"
+    case .responseTooLarge(let url, let maximumBytes):
+      return "Response exceeds \(maximumBytes) bytes: \(url)"
+    case .invalidHTTPStatus(let url, let statusCode):
+      return "URL returned HTTP \(statusCode): \(url)"
     case .queryTooShort:
       return "Search query is too short."
     case .unsupportedExpression(let expression):
@@ -28,6 +46,140 @@ public enum KarmaToolError: Error, CustomStringConvertible, Equatable, Sendable 
       return "Division by zero."
     }
   }
+}
+
+public struct URLFetchTool: ToolOutputDescribing {
+  public struct Response: Sendable {
+    public var statusCode: Int
+    public var body: Data
+
+    public init(statusCode: Int, body: Data) {
+      self.statusCode = statusCode
+      self.body = body
+    }
+  }
+
+  public var name = "fetch_url"
+  public var description = "Fetches a public HTTP(S) URL after validating scheme, host, timeout, and response size."
+  public var outputDescription: String? = "UTF-8 response body from an allowed public URL."
+  public var inputs: [String: ToolInput] = [
+    "url": ToolInput(type: .string, description: "Public HTTP(S) URL to fetch.")
+  ]
+
+  public var allowedSchemes: Set<String>
+  public var allowedHosts: Set<String>?
+  public var blockedHosts: Set<String>
+  public var maximumBytes: Int
+  public var timeoutSeconds: Double
+  private let client: @Sendable (URL, Double) async throws -> Response
+
+  public init(
+    allowedSchemes: Set<String> = ["https"],
+    allowedHosts: Set<String>? = nil,
+    blockedHosts: Set<String> = Self.defaultBlockedHosts,
+    maximumBytes: Int = 128 * 1024,
+    timeoutSeconds: Double = 20,
+    client: (@Sendable (URL, Double) async throws -> Response)? = nil
+  ) {
+    self.allowedSchemes = Set(allowedSchemes.map { $0.lowercased() })
+    self.allowedHosts = allowedHosts.map { Set($0.map { $0.lowercased() }) }
+    self.blockedHosts = Set(blockedHosts.map { $0.lowercased() })
+    self.maximumBytes = maximumBytes
+    self.timeoutSeconds = timeoutSeconds
+    self.client = client ?? Self.defaultClient
+  }
+
+  public func call(arguments: [String: String]) async throws -> String {
+    guard let rawURL = arguments["url"]?.trimmingCharacters(in: .whitespacesAndNewlines), !rawURL.isEmpty else {
+      throw KarmaToolError.missingArgument("url")
+    }
+
+    let url = try validate(rawURL)
+    let response = try await client(url, timeoutSeconds)
+    guard (200..<300).contains(response.statusCode) else {
+      throw KarmaToolError.invalidHTTPStatus(url: url.absoluteString, statusCode: response.statusCode)
+    }
+    guard response.body.count <= maximumBytes else {
+      throw KarmaToolError.responseTooLarge(url: url.absoluteString, maximumBytes: maximumBytes)
+    }
+
+    return String(decoding: response.body, as: UTF8.self)
+  }
+
+  private func validate(_ rawURL: String) throws -> URL {
+    guard let components = URLComponents(string: rawURL),
+          let scheme = components.scheme?.lowercased(),
+          let host = components.host?.lowercased(),
+          let url = components.url,
+          !host.isEmpty else {
+      throw KarmaToolError.invalidURL(rawURL)
+    }
+
+    guard allowedSchemes.contains(scheme) else {
+      throw KarmaToolError.urlSchemeNotAllowed(scheme)
+    }
+
+    guard allowedHosts?.contains(host) ?? true else {
+      throw KarmaToolError.urlHostNotAllowed(host)
+    }
+
+    guard !isBlockedHost(host) else {
+      throw KarmaToolError.urlHostBlocked(host)
+    }
+
+    return url
+  }
+
+  private func isBlockedHost(_ host: String) -> Bool {
+    if blockedHosts.contains(host) || host.hasSuffix(".local") {
+      return true
+    }
+
+    if isBlockedIPv4(host) || isBlockedIPv6(host) {
+      return true
+    }
+
+    return false
+  }
+
+  private func isBlockedIPv4(_ host: String) -> Bool {
+    let parts = host.split(separator: ".")
+    guard parts.count == 4,
+          let first = UInt8(parts[0]),
+          let second = UInt8(parts[1]) else {
+      return false
+    }
+
+    return first == 0
+      || first == 10
+      || first == 127
+      || (first == 169 && second == 254)
+      || (first == 172 && (16...31).contains(second))
+      || (first == 192 && second == 168)
+  }
+
+  private func isBlockedIPv6(_ host: String) -> Bool {
+    let normalized = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")).lowercased()
+    return normalized == "::1"
+      || normalized.hasPrefix("fc")
+      || normalized.hasPrefix("fd")
+      || normalized.hasPrefix("fe80:")
+  }
+
+  private static func defaultClient(url: URL, timeoutSeconds: Double) async throws -> Response {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.timeoutIntervalForRequest = timeoutSeconds
+    configuration.timeoutIntervalForResource = timeoutSeconds
+    let session = URLSession(configuration: configuration)
+    let (data, response) = try await session.data(from: url)
+    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 200
+    return Response(statusCode: statusCode, body: data)
+  }
+
+  public static let defaultBlockedHosts: Set<String> = [
+    "localhost",
+    "metadata.google.internal"
+  ]
 }
 
 public struct CurrentTimeTool: ToolOutputDescribing {

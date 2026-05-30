@@ -390,7 +390,21 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
       )
       throw error
     }
-    return try await tool.call(arguments: decodedArguments)
+    do {
+      return try await tool.call(arguments: decodedArguments)
+    } catch {
+      await audit?.record(
+        AgentEvent(
+          kind: .toolCallFailed,
+          message: String(describing: error),
+          errorType: String(reflecting: Swift.type(of: error)),
+          errorDescription: String(describing: error),
+          toolCall: call,
+          toolManifest: manifest
+        )
+      )
+      throw error
+    }
   }
 
   private static func decode(_ content: GeneratedContent, for tool: any KarmaKit.Tool) throws -> [String: String] {
