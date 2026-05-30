@@ -497,6 +497,36 @@ import Foundation
   #expect(observedKinds == run.events.map(\.kind))
 }
 
+@Test func agentRunReportsDerivedMetrics() async throws {
+  let tool = ClosureTool(name: "lookup", description: "Looks up data.", inputs: [:]) { _ in
+    "abcdef"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "lookup")]),
+    .finalAnswer("done")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    limits: AgentLimits(maximumToolOutputCharacters: 2)
+  )
+
+  let run = try await agent.run("Look up the value")
+  let metrics = run.metrics
+
+  #expect(metrics.stepCount == 2)
+  #expect(metrics.messageCount == 4)
+  #expect(metrics.modelOutputCount == 2)
+  #expect(metrics.toolCallCount == 1)
+  #expect(metrics.toolResultCount == 1)
+  #expect(metrics.limitedToolOutputCount == 1)
+  #expect(metrics.modelRetryCount == 0)
+  #expect(metrics.partialResponseCount == 0)
+  #expect(metrics.isInterrupted == false)
+  #expect(metrics.isFailed == false)
+  #expect(metrics.durationSeconds != nil)
+}
+
 @Test func finalAnswerValidatorsCanRejectAnswers() async throws {
   let model = ScriptedModel(outputs: [
     .finalAnswer("   ")
@@ -881,6 +911,9 @@ import Foundation
   #expect(envelope.version == 1)
   #expect(envelope.createdAt == Date(timeIntervalSince1970: 0))
   #expect(envelope.run == run)
+  #expect(envelope.metrics.stepCount == 1)
+  #expect(envelope.metrics.eventCount == 1)
+  #expect(envelope.metrics.durationSeconds == nil)
 }
 
 @Test func agentTraceExporterRedactsSensitiveFieldsByDefault() async throws {

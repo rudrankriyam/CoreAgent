@@ -69,6 +69,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
 - `ManagedAgentTool`: exposes an agent as a callable tool.
 - `AgentObserver`: records run, model, tool, and answer events.
+- `AgentRunMetrics`: summarizes steps, retries, tool calls, interruptions, and duration.
 - `FinalAnswerValidator`: validates answers before a run succeeds.
 - `RetryPolicy`: retries transient model failures.
 - `AgentTimeouts`: limits long-running tool calls.

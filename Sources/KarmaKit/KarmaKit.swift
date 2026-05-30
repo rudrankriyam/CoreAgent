@@ -747,12 +747,27 @@ public struct AgentRun: Codable, Equatable, Sendable {
   public var steps: [ActionStep]
   public var messages: [AgentMessage]
   public var events: [AgentEvent]
+  public var startedAt: Date?
+  public var endedAt: Date?
 
-  public init(finalAnswer: String, steps: [ActionStep], messages: [AgentMessage], events: [AgentEvent]) {
+  public init(
+    finalAnswer: String,
+    steps: [ActionStep],
+    messages: [AgentMessage],
+    events: [AgentEvent],
+    startedAt: Date? = nil,
+    endedAt: Date? = nil
+  ) {
     self.finalAnswer = finalAnswer
     self.steps = steps
     self.messages = messages
     self.events = events
+    self.startedAt = startedAt
+    self.endedAt = endedAt
+  }
+
+  public var metrics: AgentRunMetrics {
+    AgentRunMetrics(run: self)
   }
 
   public func redacted(using policy: AgentRedactionPolicy = .standard) -> AgentRun {
@@ -760,19 +775,91 @@ public struct AgentRun: Codable, Equatable, Sendable {
       finalAnswer: policy.redact(finalAnswer),
       steps: steps.map { $0.redacted(using: policy) },
       messages: messages.map { $0.redacted(using: policy) },
-      events: events.map { $0.redacted(using: policy) }
+      events: events.map { $0.redacted(using: policy) },
+      startedAt: startedAt,
+      endedAt: endedAt
     )
+  }
+}
+
+public struct AgentRunMetrics: Codable, Equatable, Sendable {
+  public var stepCount: Int
+  public var messageCount: Int
+  public var eventCount: Int
+  public var modelOutputCount: Int
+  public var modelRetryCount: Int
+  public var toolCallCount: Int
+  public var toolResultCount: Int
+  public var limitedToolOutputCount: Int
+  public var partialResponseCount: Int
+  public var isInterrupted: Bool
+  public var isFailed: Bool
+  public var durationSeconds: Double?
+
+  public init(
+    stepCount: Int,
+    messageCount: Int,
+    eventCount: Int,
+    modelOutputCount: Int,
+    modelRetryCount: Int,
+    toolCallCount: Int,
+    toolResultCount: Int,
+    limitedToolOutputCount: Int,
+    partialResponseCount: Int,
+    isInterrupted: Bool,
+    isFailed: Bool,
+    durationSeconds: Double?
+  ) {
+    self.stepCount = stepCount
+    self.messageCount = messageCount
+    self.eventCount = eventCount
+    self.modelOutputCount = modelOutputCount
+    self.modelRetryCount = modelRetryCount
+    self.toolCallCount = toolCallCount
+    self.toolResultCount = toolResultCount
+    self.limitedToolOutputCount = limitedToolOutputCount
+    self.partialResponseCount = partialResponseCount
+    self.isInterrupted = isInterrupted
+    self.isFailed = isFailed
+    self.durationSeconds = durationSeconds
+  }
+
+  public init(run: AgentRun) {
+    self.init(
+      stepCount: run.steps.count,
+      messageCount: run.messages.count,
+      eventCount: run.events.count,
+      modelOutputCount: run.events.filter { $0.kind == .modelOutput }.count,
+      modelRetryCount: run.events.filter { $0.kind == .modelRetry }.count,
+      toolCallCount: run.events.filter { $0.kind == .toolCallStarted }.count,
+      toolResultCount: run.events.filter { $0.kind == .toolCallFinished }.count,
+      limitedToolOutputCount: run.events.filter { $0.kind == .toolOutputLimited }.count,
+      partialResponseCount: run.events.filter { $0.kind == .partialResponse }.count,
+      isInterrupted: run.events.contains { $0.kind == .runInterrupted },
+      isFailed: run.events.contains { $0.kind == .runFailed },
+      durationSeconds: Self.durationSeconds(startedAt: run.startedAt, endedAt: run.endedAt)
+    )
+  }
+
+  private static func durationSeconds(startedAt: Date?, endedAt: Date?) -> Double? {
+    guard let startedAt, let endedAt else {
+      return nil
+    }
+
+    return endedAt.timeIntervalSince(startedAt)
   }
 }
 
 public struct AgentRunEnvelope: Codable, Equatable, Sendable {
   public var version: Int
   public var createdAt: Date
+  public var metrics: AgentRunMetrics
   public var run: AgentRun
 
   public init(version: Int = 1, createdAt: Date = Date(), run: AgentRun) {
     self.version = version
     self.createdAt = createdAt
+    self.metrics = run.metrics
     self.run = run
   }
 }
@@ -1145,6 +1232,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     cancellation: AgentCancellation?,
     streaming onPartialResponse: (@Sendable (String) async -> Void)?
   ) async throws -> AgentRun {
+    let startedAt = Date()
     if resetsMemoryBeforeRun {
       memory.reset()
     } else if let storedMemory = try await memoryStore?.load() {
@@ -1196,7 +1284,14 @@ public final class ToolCallingAgent: @unchecked Sendable {
           memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, isFinalAnswer: true))
           await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: answer))
           try await memoryStore?.save(memory)
-          return AgentRun(finalAnswer: answer, steps: memory.steps, messages: memory.messages, events: memory.events)
+          return AgentRun(
+            finalAnswer: answer,
+            steps: memory.steps,
+            messages: memory.messages,
+            events: memory.events,
+            startedAt: startedAt,
+            endedAt: Date()
+          )
 
         case .toolCalls(let calls):
           let results = try await calls.asyncMap { call in
