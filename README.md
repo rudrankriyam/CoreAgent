@@ -108,6 +108,7 @@ swift run karma --demo-tools --allow-url-host example.com "Fetch https://example
 - `AgentLimits`: caps oversized model input and tool output before they create brittle runs.
 - `AgentLimits.maximumContextMessages`: keeps model input bounded while preserving full run memory.
 - `AgentLimits.maximumMemoryMessages`: compacts retained memory before long-lived runs continue.
+- `AgentLimits.maximumToolCallsPerStep`: rejects excessive tool fan-out before execution.
 - `AgentMessageNormalizer`: merges compatible consecutive messages before provider calls.
 - `StreamingModelProvider`: streams partial responses when a provider supports it.
 - `AgentRedactionPolicy`: removes token-like values from exported traces and receipts by default.

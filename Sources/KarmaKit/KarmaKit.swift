@@ -15,6 +15,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case untrustedTool(name: String, digest: String)
   case untrustedToolIdentity(name: String, serverID: String)
   case toolDenied(name: String, reason: String)
+  case tooManyToolCalls(stepNumber: Int, requested: Int, maximum: Int)
   case modelInputTooLarge(characters: Int, maximum: Int)
   case interrupted(reason: String)
   case configurationMismatch(String)
@@ -937,17 +938,20 @@ public struct AgentLimits: Codable, Equatable, Sendable {
   public var maximumToolOutputCharacters: Int?
   public var maximumContextMessages: Int?
   public var maximumMemoryMessages: Int?
+  public var maximumToolCallsPerStep: Int?
 
   public init(
     maximumModelInputCharacters: Int? = nil,
     maximumToolOutputCharacters: Int? = nil,
     maximumContextMessages: Int? = nil,
-    maximumMemoryMessages: Int? = nil
+    maximumMemoryMessages: Int? = nil,
+    maximumToolCallsPerStep: Int? = nil
   ) {
     self.maximumModelInputCharacters = maximumModelInputCharacters
     self.maximumToolOutputCharacters = maximumToolOutputCharacters
     self.maximumContextMessages = maximumContextMessages
     self.maximumMemoryMessages = maximumMemoryMessages
+    self.maximumToolCallsPerStep = maximumToolCallsPerStep
   }
 
   public static let none = AgentLimits()
@@ -2662,6 +2666,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
           )
 
         case .toolCalls(let calls):
+          try await enforceToolCallLimit(calls, stepNumber: stepNumber)
           let results = switch toolCallExecutionMode {
           case .sequential:
             try await executeToolCallsSequentially(calls, stepNumber: stepNumber, task: task, cancellation: cancellation)
@@ -2723,6 +2728,24 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     return "This run completes through tool actions. Call '\(doneToolName)' after completing the required actions."
+  }
+
+  private func enforceToolCallLimit(_ calls: [ToolCall], stepNumber: Int) async throws {
+    guard let maximum = limits.maximumToolCallsPerStep, calls.count > maximum else {
+      return
+    }
+
+    let error = KarmaError.tooManyToolCalls(stepNumber: stepNumber, requested: calls.count, maximum: maximum)
+    await emit(
+      .init(
+        kind: .toolCallDenied,
+        stepNumber: stepNumber,
+        message: "Tool call limit exceeded: requested \(calls.count), maximum \(maximum).",
+        errorType: String(reflecting: Swift.type(of: error)),
+        errorDescription: String(describing: error)
+      )
+    )
+    throw error
   }
 
   private func actionCompletionResult(from calls: [ToolCall], results: [ToolResult]) -> String? {

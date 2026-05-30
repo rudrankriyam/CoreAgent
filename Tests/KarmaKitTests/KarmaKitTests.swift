@@ -104,6 +104,69 @@ import Foundation
   #expect(agent.snapshotRun().metrics.toolDenialCount == 1)
 }
 
+@Test func toolCallLimitRejectsFanOutBeforeSequentialExecution() async throws {
+  let counter = CallCounter()
+  let firstTool = ClosureTool(name: "first", description: "First tool.", inputs: [:]) { _ in
+    await counter.increment()
+    return "first"
+  }
+  let secondTool = ClosureTool(name: "second", description: "Second tool.", inputs: [:]) { _ in
+    await counter.increment()
+    return "second"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "call_1", name: "first"),
+      ToolCall(id: "call_2", name: "second")
+    ])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [firstTool, secondTool],
+    model: model,
+    limits: AgentLimits(maximumToolCallsPerStep: 1)
+  )
+
+  await #expect(throws: KarmaError.tooManyToolCalls(stepNumber: 1, requested: 2, maximum: 1)) {
+    _ = try await agent.run("Run both tools")
+  }
+
+  #expect(await counter.value == 0)
+  #expect(agent.memory.events.map(\.kind) == [.runStarted, .modelOutput, .toolCallDenied, .runFailed])
+  #expect(agent.snapshotRun().metrics.toolDenialCount == 1)
+}
+
+@Test func toolCallLimitRejectsFanOutBeforeParallelPreflight() async throws {
+  let counter = CallCounter()
+  let firstTool = ClosureTool(name: "first", description: "First tool.", inputs: [:]) { _ in
+    await counter.increment()
+    return "first"
+  }
+  let secondTool = ClosureTool(name: "second", description: "Second tool.", inputs: [:]) { _ in
+    await counter.increment()
+    return "second"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([
+      ToolCall(id: "call_1", name: "first"),
+      ToolCall(id: "call_2", name: "second")
+    ])
+  ])
+  let agent = ToolCallingAgent(
+    tools: [firstTool, secondTool],
+    model: model,
+    limits: AgentLimits(maximumToolCallsPerStep: 1),
+    toolCallExecutionMode: .parallel
+  )
+
+  await #expect(throws: KarmaError.tooManyToolCalls(stepNumber: 1, requested: 2, maximum: 1)) {
+    _ = try await agent.run("Run both tools")
+  }
+
+  #expect(await counter.value == 0)
+  #expect(!agent.memory.events.contains { $0.kind == .toolCallAuthorized })
+  #expect(!agent.memory.events.contains { $0.kind == .toolCallStarted })
+}
+
 @Test func parallelToolCallsCancelSiblingsAfterFailure() async throws {
   let probe = CancellationProbe()
   let slowTool = ClosureTool(name: "slow", description: "Sleeps until cancelled.", inputs: [:]) { _ in
@@ -1068,7 +1131,8 @@ import Foundation
     limits: AgentLimits(
       maximumModelInputCharacters: 1000,
       maximumToolOutputCharacters: 100,
-      maximumContextMessages: 12
+      maximumContextMessages: 12,
+      maximumToolCallsPerStep: 4
     ),
     toolCallExecutionMode: .parallel,
     toolArgumentErrorRecoveryMode: .fail,
@@ -1094,6 +1158,7 @@ import Foundation
   #expect(rebuiltAgent.resetsMemoryBeforeRun == false)
   #expect(rebuiltAgent.limits.maximumToolOutputCharacters == 100)
   #expect(rebuiltAgent.limits.maximumContextMessages == 12)
+  #expect(rebuiltAgent.limits.maximumToolCallsPerStep == 4)
   #expect(rebuiltAgent.toolCallExecutionMode == .parallel)
   #expect(rebuiltAgent.toolArgumentErrorRecoveryMode == .fail)
   #expect(rebuiltAgent.finalAnswerRecoveryMode == .fail)
