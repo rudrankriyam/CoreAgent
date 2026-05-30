@@ -36,6 +36,7 @@ Model providers conform to `ModelProvider` and return either tool calls or a fin
 
 ```bash
 swift run karma "Explain tool calling in one sentence"
+swift run karma --demo-tools "Use the multiply tool to multiply 12 by 13. Return only the number."
 ```
 
 ## Current Foundation
@@ -46,15 +47,18 @@ swift run karma "Explain tool calling in one sentence"
 - `ToolCallingAgent`: minimal loop that asks a model for tool calls or a final answer.
 - `AgentMemory`: stores messages and action steps.
 - `FoundationModelProvider`: Apple Foundation Models backend.
+- `FoundationModelToolAdapter`: bridges KarmaKit tools into Foundation Models tools.
+- `ToolExecutionPolicy`: authorizes tool calls before execution.
+- `ToolOutputSanitizer`: marks instruction-like tool output as untrusted data.
 
 ## Roadmap
 
-- Foundation Models tool bridge.
 - App Intents bridge.
 - Shortcuts bridge.
 - SwiftData or SQLite memory store.
 - Local RAG examples.
 - SwiftUI debugging view for agent runs.
+- Managed agents and richer run inspection.
 
 ## Contributing
 

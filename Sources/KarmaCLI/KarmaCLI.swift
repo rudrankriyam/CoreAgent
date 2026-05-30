@@ -6,20 +6,25 @@ import KarmaKitFoundationModels
 struct KarmaCLI {
   static func main() async {
     do {
-      let arguments = Array(CommandLine.arguments.dropFirst())
+      var arguments = Array(CommandLine.arguments.dropFirst())
 
       guard !arguments.isEmpty else {
         printUsage()
         return
       }
 
+      let enablesDemoTools = arguments.removeAll("--demo-tools")
       let prompt = arguments.joined(separator: " ")
 
       if #available(macOS 26.0, *) {
         let provider = FoundationModelProvider(
           instructions: "Answer clearly and concisely. You are running inside KarmaKit."
         )
-        let agent = ToolCallingAgent(tools: [], model: provider)
+        let agent = try ToolCallingAgent(
+          tools: enablesDemoTools ? DemoTools.all : [],
+          model: provider,
+          validatesToolNames: true
+        )
         let run = try await agent.run(prompt)
         print(run.finalAnswer)
       } else {
@@ -34,6 +39,41 @@ struct KarmaCLI {
 
   private static func printUsage() {
     print("Usage: karma <prompt>")
+    print("       karma --demo-tools <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
+  }
+}
+
+private enum DemoTools {
+  static var all: [any Tool] {
+    [
+      ClosureTool(
+        name: "current_time",
+        description: "Returns the current date and time in ISO 8601 format.",
+        inputs: [:]
+      ) { _ in
+        ISO8601DateFormatter().string(from: Date())
+      },
+      ClosureTool(
+        name: "multiply",
+        description: "Multiplies two numbers and returns the result.",
+        inputs: [
+          "left": ToolInput(type: .number, description: "The first number."),
+          "right": ToolInput(type: .number, description: "The second number.")
+        ]
+      ) { arguments in
+        let left = Double(arguments["left", default: "0"]) ?? 0
+        let right = Double(arguments["right", default: "0"]) ?? 0
+        return String(left * right)
+      }
+    ]
+  }
+}
+
+private extension Array where Element == String {
+  mutating func removeAll(_ value: String) -> Bool {
+    let originalCount = count
+    self = filter { $0 != value }
+    return count != originalCount
   }
 }

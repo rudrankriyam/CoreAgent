@@ -40,7 +40,10 @@ let package = Package(
     ),
     .testTarget(
       name: "KarmaKitTests",
-      dependencies: ["KarmaKit"]
+      dependencies: [
+        "KarmaKit",
+        "KarmaKitFoundationModels"
+      ]
     )
   ]
 )
