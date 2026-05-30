@@ -7,6 +7,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case finalAnswerRejected(String)
   case timedOut(operation: String, seconds: Double)
   case retryLimitExceeded(attempts: Int, reason: String)
+  case persistenceFailed(String)
   case maxStepsReached(Int)
 }
 
@@ -228,9 +229,50 @@ public struct ManagedAgentTool: Tool {
   }
 }
 
-public enum ModelOutput: Equatable, Sendable {
+public enum ModelOutput: Codable, Equatable, Sendable {
   case toolCalls([ToolCall])
   case finalAnswer(String, events: [AgentEvent] = [])
+
+  private enum CodingKeys: String, CodingKey {
+    case kind
+    case toolCalls
+    case answer
+    case events
+  }
+
+  private enum Kind: String, Codable {
+    case toolCalls
+    case finalAnswer
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let kind = try container.decode(Kind.self, forKey: .kind)
+
+    switch kind {
+    case .toolCalls:
+      self = .toolCalls(try container.decode([ToolCall].self, forKey: .toolCalls))
+    case .finalAnswer:
+      self = .finalAnswer(
+        try container.decode(String.self, forKey: .answer),
+        events: try container.decodeIfPresent([AgentEvent].self, forKey: .events) ?? []
+      )
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+
+    switch self {
+    case .toolCalls(let calls):
+      try container.encode(Kind.toolCalls, forKey: .kind)
+      try container.encode(calls, forKey: .toolCalls)
+    case .finalAnswer(let answer, let events):
+      try container.encode(Kind.finalAnswer, forKey: .kind)
+      try container.encode(answer, forKey: .answer)
+      try container.encode(events, forKey: .events)
+    }
+  }
 }
 
 public protocol ModelProvider: Sendable {
@@ -267,7 +309,7 @@ public struct AgentTimeouts: Equatable, Sendable {
   public static let none = AgentTimeouts()
 }
 
-public struct ActionStep: Equatable, Sendable {
+public struct ActionStep: Codable, Equatable, Sendable {
   public var stepNumber: Int
   public var modelOutput: ModelOutput
   public var toolResults: [ToolResult]
@@ -286,7 +328,7 @@ public struct ActionStep: Equatable, Sendable {
   }
 }
 
-public struct AgentMemory: Sendable {
+public struct AgentMemory: Codable, Equatable, Sendable {
   public private(set) var systemPrompt: String
   public private(set) var messages: [AgentMessage]
   public private(set) var steps: [ActionStep]
@@ -349,7 +391,7 @@ public enum ToolOutputSanitizer {
   }
 }
 
-public struct AgentRun: Equatable, Sendable {
+public struct AgentRun: Codable, Equatable, Sendable {
   public var finalAnswer: String
   public var steps: [ActionStep]
   public var messages: [AgentMessage]
@@ -363,6 +405,87 @@ public struct AgentRun: Equatable, Sendable {
   }
 }
 
+public struct AgentRunEnvelope: Codable, Equatable, Sendable {
+  public var version: Int
+  public var createdAt: Date
+  public var run: AgentRun
+
+  public init(version: Int = 1, createdAt: Date = Date(), run: AgentRun) {
+    self.version = version
+    self.createdAt = createdAt
+    self.run = run
+  }
+}
+
+public protocol AgentMemoryStore: Sendable {
+  func save(_ memory: AgentMemory) async throws
+  func load() async throws -> AgentMemory?
+}
+
+public struct FileAgentMemoryStore: AgentMemoryStore {
+  public var fileURL: URL
+  public var encoder: JSONEncoder
+  public var decoder: JSONDecoder
+
+  public init(fileURL: URL) {
+    self.fileURL = fileURL
+
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    self.encoder = encoder
+
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    self.decoder = decoder
+  }
+
+  public func save(_ memory: AgentMemory) async throws {
+    do {
+      let directory = fileURL.deletingLastPathComponent()
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let data = try encoder.encode(memory)
+      try data.write(to: fileURL, options: [.atomic])
+    } catch {
+      throw KarmaError.persistenceFailed(String(describing: error))
+    }
+  }
+
+  public func load() async throws -> AgentMemory? {
+    guard FileManager.default.fileExists(atPath: fileURL.path) else {
+      return nil
+    }
+
+    do {
+      let data = try Data(contentsOf: fileURL)
+      return try decoder.decode(AgentMemory.self, from: data)
+    } catch {
+      throw KarmaError.persistenceFailed(String(describing: error))
+    }
+  }
+}
+
+public struct AgentTraceExporter {
+  public var encoder: JSONEncoder
+
+  public init() {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    self.encoder = encoder
+  }
+
+  public func data(for run: AgentRun, createdAt: Date = Date()) throws -> Data {
+    try encoder.encode(AgentRunEnvelope(createdAt: createdAt, run: run))
+  }
+
+  public func write(_ run: AgentRun, to fileURL: URL, createdAt: Date = Date()) throws {
+    let directory = fileURL.deletingLastPathComponent()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    try data(for: run, createdAt: createdAt).write(to: fileURL, options: [.atomic])
+  }
+}
+
 public final class ToolCallingAgent: @unchecked Sendable {
   public let model: any ModelProvider
   public let tools: [String: any Tool]
@@ -373,6 +496,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let resetsMemoryBeforeRun: Bool
   public let retryPolicy: RetryPolicy
   public let timeouts: AgentTimeouts
+  public let memoryStore: (any AgentMemoryStore)?
   public private(set) var memory: AgentMemory
 
   public init(
@@ -385,7 +509,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
     observers: [any AgentObserver] = [],
     resetsMemoryBeforeRun: Bool = true,
     retryPolicy: RetryPolicy = .none,
-    timeouts: AgentTimeouts = .none
+    timeouts: AgentTimeouts = .none,
+    memoryStore: (any AgentMemoryStore)? = nil
   ) {
     self.model = model
     self.tools = tools.reduce(into: [String: any Tool]()) { partialResult, tool in
@@ -398,6 +523,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.resetsMemoryBeforeRun = resetsMemoryBeforeRun
     self.retryPolicy = retryPolicy
     self.timeouts = timeouts
+    self.memoryStore = memoryStore
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
 
@@ -412,6 +538,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     resetsMemoryBeforeRun: Bool = true,
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
+    memoryStore: (any AgentMemoryStore)? = nil,
     validatesToolNames: Bool
   ) throws {
     if validatesToolNames {
@@ -433,7 +560,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
       observers: observers,
       resetsMemoryBeforeRun: resetsMemoryBeforeRun,
       retryPolicy: retryPolicy,
-      timeouts: timeouts
+      timeouts: timeouts,
+      memoryStore: memoryStore
     )
   }
 
@@ -454,6 +582,8 @@ public final class ToolCallingAgent: @unchecked Sendable {
   ) async throws -> AgentRun {
     if resetsMemoryBeforeRun {
       memory.reset()
+    } else if let storedMemory = try await memoryStore?.load() {
+      memory = storedMemory
     }
 
     await emit(.init(kind: .runStarted, message: task))
@@ -476,6 +606,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
           memory.addAssistantMessage(answer)
           memory.addStep(.init(stepNumber: stepNumber, modelOutput: output, isFinalAnswer: true))
           await emit(.init(kind: .finalAnswerAccepted, stepNumber: stepNumber, message: answer))
+          try await memoryStore?.save(memory)
           return AgentRun(finalAnswer: answer, steps: memory.steps, messages: memory.messages, events: memory.events)
 
         case .toolCalls(let calls):

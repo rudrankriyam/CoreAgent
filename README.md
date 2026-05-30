@@ -39,6 +39,7 @@ swift run karma "Explain tool calling in one sentence"
 swift run karma --demo-tools "Use the multiply tool to multiply 12 by 13. Return only the number."
 swift run karma --verbose --demo-tools "What time is it? Use the available action."
 swift run karma --stream "Write one sentence about local agents."
+swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
 ```
 
 ## Current Foundation
@@ -58,15 +59,17 @@ swift run karma --stream "Write one sentence about local agents."
 - `RetryPolicy`: retries transient model failures.
 - `AgentTimeouts`: limits long-running tool calls.
 - `StreamingModelProvider`: streams partial responses when a provider supports it.
+- `FileAgentMemoryStore`: saves and reloads agent memory as JSON.
+- `AgentTraceExporter`: writes run traces for debugging and audits.
 
 ## Roadmap
 
 - App Intents bridge.
 - Shortcuts bridge.
-- SwiftData or SQLite memory store.
 - Local RAG examples.
 - SwiftUI debugging view for agent runs.
 - Structured output helpers.
+- SwiftData or SQLite memory store.
 
 ## Contributing
 

@@ -16,6 +16,7 @@ struct KarmaCLI {
       let enablesDemoTools = arguments.removeAll("--demo-tools")
       let enablesVerboseOutput = arguments.removeAll("--verbose")
       let enablesStreaming = arguments.removeAll("--stream")
+      let tracePath = arguments.removeOptionValue("--trace")
       let prompt = arguments.joined(separator: " ")
 
       if #available(macOS 26.0, *) {
@@ -42,6 +43,10 @@ struct KarmaCLI {
         if enablesVerboseOutput {
           fputs("\n\(run.events.karmaDebugDescription)\n", stderr)
         }
+        if let tracePath {
+          try AgentTraceExporter().write(run, to: URL(fileURLWithPath: tracePath))
+          fputs("Trace written to \(tracePath)\n", stderr)
+        }
       } else {
         fputs("Karma requires macOS 26 or newer for Foundation Models.\n", stderr)
         Foundation.exit(1)
@@ -57,6 +62,7 @@ struct KarmaCLI {
     print("       karma --demo-tools <prompt>")
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
+    print("       karma --trace /tmp/karma-trace.json <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
   }
 }
@@ -92,6 +98,19 @@ private extension Array where Element == String {
     let originalCount = count
     self = filter { $0 != value }
     return count != originalCount
+  }
+
+  mutating func removeOptionValue(_ name: String) -> String? {
+    guard let index = firstIndex(of: name) else {
+      return nil
+    }
+
+    remove(at: index)
+    guard indices.contains(index) else {
+      return nil
+    }
+
+    return remove(at: index)
   }
 }
 

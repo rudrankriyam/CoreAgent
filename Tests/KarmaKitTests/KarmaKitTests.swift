@@ -1,5 +1,6 @@
 import Testing
 import FoundationModels
+import Foundation
 @testable import KarmaKit
 @testable import KarmaKitFoundationModels
 
@@ -345,6 +346,79 @@ import FoundationModels
   #expect(run.finalAnswer == "hello")
   #expect(partials == ["hel", "hello"])
   #expect(run.events.filter { $0.kind == .partialResponse }.map(\.message) == ["hel", "hello"])
+}
+
+@Test func fileMemoryStorePersistsAndLoadsAgentMemory() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("memory.json")
+  let store = FileAgentMemoryStore(fileURL: fileURL)
+
+  var memory = AgentMemory(systemPrompt: "System")
+  memory.addTask("Remember this")
+  memory.addAssistantMessage("Remembered")
+  memory.addEvent(.init(kind: .finalAnswerAccepted, message: "Remembered"))
+
+  try await store.save(memory)
+  let loaded = try await store.load()
+
+  #expect(loaded == memory)
+  #expect(FileManager.default.fileExists(atPath: fileURL.path))
+}
+
+@Test func agentCanContinueFromPersistedMemory() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("memory.json")
+  let store = FileAgentMemoryStore(fileURL: fileURL)
+
+  let firstAgent = ToolCallingAgent(
+    tools: [],
+    model: ScriptedModel(outputs: [.finalAnswer("first")]),
+    resetsMemoryBeforeRun: false,
+    memoryStore: store
+  )
+  _ = try await firstAgent.run("First")
+
+  let secondAgent = ToolCallingAgent(
+    tools: [],
+    model: ScriptedModel(outputs: [.finalAnswer("second")]),
+    resetsMemoryBeforeRun: false,
+    memoryStore: store
+  )
+  let secondRun = try await secondAgent.run("Second")
+
+  #expect(secondRun.messages.map(\.content).contains("First"))
+  #expect(secondRun.messages.map(\.content).contains("Second"))
+}
+
+@Test func agentTraceExporterWritesDecodableRunEnvelope() async throws {
+  let fileURL = FileManager.default.temporaryDirectory
+    .appendingPathComponent("KarmaKitTests-\(UUID().uuidString)")
+    .appendingPathComponent("trace.json")
+  let run = AgentRun(
+    finalAnswer: "done",
+    steps: [
+      ActionStep(stepNumber: 1, modelOutput: .finalAnswer("done"), isFinalAnswer: true)
+    ],
+    messages: [
+      AgentMessage(role: .system, content: "System"),
+      AgentMessage(role: .assistant, content: "done")
+    ],
+    events: [
+      AgentEvent(kind: .finalAnswerAccepted, stepNumber: 1, message: "done")
+    ]
+  )
+
+  try AgentTraceExporter().write(run, to: fileURL, createdAt: Date(timeIntervalSince1970: 0))
+  let data = try Data(contentsOf: fileURL)
+  let decoder = JSONDecoder()
+  decoder.dateDecodingStrategy = .iso8601
+  let envelope = try decoder.decode(AgentRunEnvelope.self, from: data)
+
+  #expect(envelope.version == 1)
+  #expect(envelope.createdAt == Date(timeIntervalSince1970: 0))
+  #expect(envelope.run == run)
 }
 
 private enum PolicyError: Error, Equatable {
