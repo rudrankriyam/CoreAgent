@@ -6,6 +6,7 @@ public enum KarmaToolError: Error, CustomStringConvertible, Equatable, Sendable 
   case invalidPath(String)
   case pathNotAllowed(String)
   case fileTooLarge(path: String, maximumBytes: Int)
+  case queryTooShort
   case unsupportedExpression(String)
   case divisionByZero
 
@@ -19,6 +20,8 @@ public enum KarmaToolError: Error, CustomStringConvertible, Equatable, Sendable 
       return "Path is outside the allowed directories: \(path)"
     case .fileTooLarge(let path, let maximumBytes):
       return "File exceeds \(maximumBytes) bytes: \(path)"
+    case .queryTooShort:
+      return "Search query is too short."
     case .unsupportedExpression(let expression):
       return "Unsupported expression: \(expression)"
     case .divisionByZero:
@@ -110,6 +113,128 @@ public struct FileReadTool: Tool {
     allowedDirectories.contains { directory in
       fileURL.path == directory.path || fileURL.path.hasPrefix(directory.path + "/")
     }
+  }
+}
+
+public struct SearchFilesTool: Tool {
+  public var name = "search_files"
+  public var description = "Searches UTF-8 text files in allowed directories and returns JSON snippets."
+  public var inputs: [String: ToolInput] = [
+    "query": ToolInput(type: .string, description: "Text to search for."),
+    "max_results": ToolInput(type: .integer, description: "Maximum number of matches to return.", isRequired: false)
+  ]
+
+  public var allowedDirectories: [URL]
+  public var maximumFileBytes: Int
+  public var defaultMaximumResults: Int
+  public var allowedExtensions: Set<String>
+
+  public init(
+    allowedDirectories: [URL],
+    maximumFileBytes: Int = 128 * 1024,
+    defaultMaximumResults: Int = 8,
+    allowedExtensions: Set<String> = ["txt", "md", "swift", "json", "yaml", "yml"]
+  ) {
+    self.allowedDirectories = allowedDirectories.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+    self.maximumFileBytes = maximumFileBytes
+    self.defaultMaximumResults = defaultMaximumResults
+    self.allowedExtensions = allowedExtensions
+  }
+
+  public func call(arguments: [String: String]) async throws -> String {
+    guard let query = arguments["query"]?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty else {
+      throw KarmaToolError.missingArgument("query")
+    }
+    guard query.count >= 2 else {
+      throw KarmaToolError.queryTooShort
+    }
+
+    let maximumResults = arguments["max_results"].flatMap(Int.init) ?? defaultMaximumResults
+    let normalizedQuery = query.lowercased()
+    var results: [SearchResult] = []
+
+    for fileURL in try searchableFiles() {
+      let text = try String(contentsOf: fileURL, encoding: .utf8)
+      for (lineIndex, line) in text.components(separatedBy: .newlines).enumerated()
+        where line.lowercased().contains(normalizedQuery) {
+        results.append(
+          SearchResult(
+            path: fileURL.path,
+            line: lineIndex + 1,
+            excerpt: String(line.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
+          )
+        )
+
+        if results.count >= maximumResults {
+          return try encode(results)
+        }
+      }
+    }
+
+    return try encode(results)
+  }
+
+  private func searchableFiles() throws -> [URL] {
+    var files: [URL] = []
+
+    for directory in allowedDirectories {
+      guard let enumerator = FileManager.default.enumerator(
+        at: directory,
+        includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+        options: [.skipsHiddenFiles, .skipsPackageDescendants]
+      ) else {
+        continue
+      }
+
+      for case let fileURL as URL in enumerator {
+        guard isAllowed(fileURL), isAllowedExtension(fileURL) else {
+          continue
+        }
+
+        let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true else {
+          continue
+        }
+        guard (values.fileSize ?? 0) <= maximumFileBytes else {
+          continue
+        }
+
+        files.append(fileURL)
+      }
+    }
+
+    return files
+  }
+
+  private func isAllowed(_ fileURL: URL) -> Bool {
+    let resolvedURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+    return allowedDirectories.contains { directory in
+      resolvedURL.path == directory.path || resolvedURL.path.hasPrefix(directory.path + "/")
+    }
+  }
+
+  private func isAllowedExtension(_ fileURL: URL) -> Bool {
+    let fileExtension = fileURL.pathExtension.lowercased()
+    return allowedExtensions.isEmpty || allowedExtensions.contains(fileExtension)
+  }
+
+  private func encode(_ results: [SearchResult]) throws -> String {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    let data = try encoder.encode(results)
+    return String(decoding: data, as: UTF8.self)
+  }
+}
+
+public struct SearchResult: Codable, Equatable, Sendable {
+  public var path: String
+  public var line: Int
+  public var excerpt: String
+
+  public init(path: String, line: Int, excerpt: String) {
+    self.path = path
+    self.line = line
+    self.excerpt = excerpt
   }
 }
 

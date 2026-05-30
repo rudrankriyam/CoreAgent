@@ -47,6 +47,7 @@ struct KarmaCLI {
         let agent = try ToolCallingAgent(
           tools: enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : [],
           model: provider,
+          retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
           validatesToolNames: true
         )
         let run: AgentRun
@@ -98,13 +99,15 @@ private enum DemoTools {
     ]
 
     if !allowedFileDirectories.isEmpty {
+      let allowedURLs = allowedFileDirectories.map {
+        URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath)
+      }
       tools.append(
         FileReadTool(
-          allowedDirectories: allowedFileDirectories.map {
-            URL(fileURLWithPath: NSString(string: $0).expandingTildeInPath)
-          }
+          allowedDirectories: allowedURLs
         )
       )
+      tools.append(SearchFilesTool(allowedDirectories: allowedURLs))
     }
 
     return tools
