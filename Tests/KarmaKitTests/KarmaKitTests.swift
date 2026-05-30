@@ -491,6 +491,64 @@ import Foundation
   }
 }
 
+@Test func agentCanBeInterruptedBeforeModelGeneration() async throws {
+  let cancellation = AgentCancellation()
+  await cancellation.interrupt(reason: "User stopped the run.")
+  let model = CountingModel(output: .finalAnswer("unused"))
+  let agent = ToolCallingAgent(tools: [], model: model)
+
+  await #expect(throws: KarmaError.interrupted(reason: "User stopped the run.")) {
+    _ = try await agent.run("Stop early", cancellation: cancellation)
+  }
+
+  #expect(await model.generateCallCount == 0)
+  #expect(agent.memory.events.map(\.kind) == [.runStarted, .runInterrupted])
+  #expect(agent.memory.events.last?.message == "User stopped the run.")
+}
+
+@Test func agentCanBeInterruptedDuringToolExecution() async throws {
+  let cancellation = AgentCancellation()
+  let tool = ClosureTool(name: "stop", description: "Stops the run.", inputs: [:]) { _ in
+    await cancellation.interrupt(reason: "Tool requested stop.")
+    return "should not enter memory"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "stop")]),
+    .finalAnswer("unused")
+  ])
+  let agent = ToolCallingAgent(tools: [tool], model: model)
+
+  await #expect(throws: KarmaError.interrupted(reason: "Tool requested stop.")) {
+    _ = try await agent.run("Call stop", cancellation: cancellation)
+  }
+
+  #expect(agent.memory.messages.contains { $0.role == .tool } == false)
+  #expect(agent.memory.events.map(\.kind) == [.runStarted, .modelOutput, .toolCallStarted, .runInterrupted])
+  #expect(agent.memory.events.last?.message == "Tool requested stop.")
+}
+
+@Test func managedAgentToolPropagatesInterruptionReason() async throws {
+  let cancellation = AgentCancellation()
+  let childTool = ClosureTool(name: "stop_child", description: "Stops child work.", inputs: [:]) { _ in
+    await cancellation.interrupt(reason: "Child was stopped.")
+    return "unused"
+  }
+  let childModel = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "child_call", name: "stop_child")])
+  ])
+  let childAgent = ToolCallingAgent(tools: [childTool], model: childModel)
+  let managedTool = ManagedAgentTool(
+    name: "delegate_to_child",
+    description: "Delegates work to a child agent.",
+    agent: childAgent,
+    cancellation: cancellation
+  )
+
+  await #expect(throws: KarmaError.interrupted(reason: "Child was stopped.")) {
+    _ = try await managedTool.call(arguments: ["task": "Stop child"])
+  }
+}
+
 @Test func modelGenerationRetriesTransientFailures() async throws {
   let model = FlakyModel(failuresBeforeSuccess: 1, answer: "recovered")
   let agent = ToolCallingAgent(

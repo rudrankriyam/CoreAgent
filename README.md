@@ -57,6 +57,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `ClosureTool`: lightweight tool wrapper for examples and simple actions.
 - `ModelProvider`: abstraction for local, hosted, or Apple-provided models.
 - `ToolCallingAgent`: minimal loop that asks a model for tool calls or a final answer.
+- `AgentCancellation`: interrupts runs with an inspectable reason.
 - `ToolManifest`: stable digest for approving and auditing tool definitions.
 - `AgentMemory`: stores messages and action steps.
 - `FoundationModelProvider`: Apple Foundation Models backend.

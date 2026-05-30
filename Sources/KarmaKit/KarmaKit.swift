@@ -12,6 +12,7 @@ public enum KarmaError: Error, Equatable, Sendable {
   case maxStepsReached(Int)
   case untrustedTool(name: String, digest: String)
   case modelInputTooLarge(characters: Int, maximum: Int)
+  case interrupted(reason: String)
 }
 
 public enum MessageRole: String, Codable, Equatable, Sendable {
@@ -187,6 +188,7 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case toolOutputLimited
   case partialResponse
   case finalAnswerAccepted
+  case runInterrupted
   case runFailed
 }
 
@@ -228,6 +230,24 @@ public struct AgentEvent: Codable, Equatable, Sendable {
 
 public protocol AgentObserver: Sendable {
   func observe(_ event: AgentEvent) async
+}
+
+public actor AgentCancellation {
+  private var reason: String?
+
+  public init() {}
+
+  public func interrupt(reason: String) {
+    self.reason = reason
+  }
+
+  public func reset() {
+    reason = nil
+  }
+
+  public var interruptionReason: String? {
+    reason
+  }
 }
 
 public struct FinalAnswerValidationContext: Sendable {
@@ -331,13 +351,15 @@ public struct ManagedAgentTool: Tool {
   public var description: String
   public var inputs: [String: ToolInput]
   private let agent: ToolCallingAgent
+  private let cancellation: AgentCancellation?
 
   public init(
     name: String,
     description: String,
     taskInputName: String = "task",
     taskInputDescription: String = "The task for the managed agent.",
-    agent: ToolCallingAgent
+    agent: ToolCallingAgent,
+    cancellation: AgentCancellation? = nil
   ) {
     self.name = name
     self.description = description
@@ -345,6 +367,7 @@ public struct ManagedAgentTool: Tool {
       taskInputName: ToolInput(type: .string, description: taskInputDescription)
     ]
     self.agent = agent
+    self.cancellation = cancellation
   }
 
   public func call(arguments: [String: String]) async throws -> String {
@@ -352,7 +375,7 @@ public struct ManagedAgentTool: Tool {
       throw KarmaError.invalidToolArguments(tool: name, expected: Array(inputs.keys).sorted())
     }
 
-    let run = try await agent.run(task)
+    let run = try await agent.run(task, cancellation: cancellation)
     return run.finalAnswer
   }
 }
@@ -976,19 +999,21 @@ public final class ToolCallingAgent: @unchecked Sendable {
     )
   }
 
-  public func run(_ task: String) async throws -> AgentRun {
-    try await run(task, streaming: nil)
+  public func run(_ task: String, cancellation: AgentCancellation? = nil) async throws -> AgentRun {
+    try await run(task, cancellation: cancellation, streaming: nil)
   }
 
   public func runStreaming(
     _ task: String,
+    cancellation: AgentCancellation? = nil,
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> AgentRun {
-    try await run(task, streaming: onPartialResponse)
+    try await run(task, cancellation: cancellation, streaming: onPartialResponse)
   }
 
   private func run(
     _ task: String,
+    cancellation: AgentCancellation?,
     streaming onPartialResponse: (@Sendable (String) async -> Void)?
   ) async throws -> AgentRun {
     if resetsMemoryBeforeRun {
@@ -999,6 +1024,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
     await emit(.init(kind: .runStarted, message: task))
     memory.addTask(task)
+    try await checkInterruption(cancellation)
 
     guard maxSteps > 0 else {
       let error = KarmaError.maxStepsReached(maxSteps)
@@ -1008,10 +1034,13 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
     do {
       for stepNumber in 1...maxSteps {
+        try await checkInterruption(cancellation, stepNumber: stepNumber)
         let output = try await generateModelOutput(
           stepNumber: stepNumber,
+          cancellation: cancellation,
           onPartialResponse: onPartialResponse
         )
+        try await checkInterruption(cancellation, stepNumber: stepNumber)
         await emit(.init(kind: .modelOutput, stepNumber: stepNumber, message: output.eventSummary))
 
         switch output {
@@ -1031,6 +1060,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
               )
             }
             await emit(limitedEvent.event)
+            try await checkInterruption(cancellation, stepNumber: stepNumber)
           }
           try await validateFinalAnswer(answer, task: task)
           memory.addAssistantMessage(answer)
@@ -1041,6 +1071,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
         case .toolCalls(let calls):
           let results = try await calls.asyncMap { call in
+            try await self.checkInterruption(cancellation, stepNumber: stepNumber)
             guard let tool = tools[call.name] else {
               throw KarmaError.missingTool(call.name)
             }
@@ -1050,7 +1081,9 @@ public final class ToolCallingAgent: @unchecked Sendable {
               .init(call: call, stepNumber: stepNumber, task: task, toolManifest: manifest)
             )
             await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call, toolManifest: manifest))
+            try await self.checkInterruption(cancellation, stepNumber: stepNumber)
             let rawOutput = try await callTool(tool, arguments: call.arguments)
+            try await self.checkInterruption(cancellation, stepNumber: stepNumber)
             let limitedOutput = limitToolOutput(rawOutput)
             let result = ToolResult(callID: call.id, output: limitedOutput.output)
             if let message = limitedOutput.message {
@@ -1086,6 +1119,11 @@ public final class ToolCallingAgent: @unchecked Sendable {
       }
 
       throw KarmaError.maxStepsReached(maxSteps)
+    } catch KarmaError.interrupted(let reason) {
+      if memory.events.last?.kind != .runInterrupted {
+        await emit(.init(kind: .runInterrupted, message: reason))
+      }
+      throw KarmaError.interrupted(reason: reason)
     } catch {
       await emit(.init(kind: .runFailed, message: String(describing: error)))
       throw error
@@ -1094,6 +1132,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
   private func generateModelOutput(
     stepNumber: Int,
+    cancellation: AgentCancellation?,
     onPartialResponse: (@Sendable (String) async -> Void)?
   ) async throws -> ModelOutput {
     let tools = Array(tools.values)
@@ -1103,6 +1142,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
 
     while attempt <= retryPolicy.maximumRetries {
       do {
+        try await checkInterruption(cancellation, stepNumber: stepNumber)
         if let onPartialResponse, let streamingModel = model as? any StreamingModelProvider {
           return try await streamingModel.stream(
             messages: memory.messages,
@@ -1130,6 +1170,19 @@ public final class ToolCallingAgent: @unchecked Sendable {
     }
 
     throw KarmaError.retryLimitExceeded(attempts: attempt, reason: String(describing: lastError))
+  }
+
+  private func checkInterruption(_ cancellation: AgentCancellation?, stepNumber: Int? = nil) async throws {
+    guard let reason = await cancellation?.interruptionReason else {
+      return
+    }
+
+    if let stepNumber {
+      await emit(.init(kind: .runInterrupted, stepNumber: stepNumber, message: reason))
+    } else {
+      await emit(.init(kind: .runInterrupted, message: reason))
+    }
+    throw KarmaError.interrupted(reason: reason)
   }
 
   private func enforceModelInputLimit(messages: [AgentMessage], tools: [any Tool]) throws {
