@@ -44,11 +44,53 @@ public struct ToolInput: Codable, Equatable, Sendable {
   public var type: ValueType
   public var description: String
   public var isRequired: Bool
+  public var properties: [String: ToolInput]
+  private var itemBox: ToolInputBox?
 
-  public init(type: ValueType, description: String, isRequired: Bool = true) {
+  public var items: ToolInput? {
+    itemBox?.value
+  }
+
+  public init(
+    type: ValueType,
+    description: String,
+    isRequired: Bool = true,
+    properties: [String: ToolInput] = [:],
+    items: ToolInput? = nil
+  ) {
     self.type = type
     self.description = description
     self.isRequired = isRequired
+    self.properties = properties
+    self.itemBox = items.map(ToolInputBox.init)
+  }
+
+  public static func object(
+    description: String,
+    isRequired: Bool = true,
+    properties: [String: ToolInput]
+  ) -> ToolInput {
+    ToolInput(type: .object, description: description, isRequired: isRequired, properties: properties)
+  }
+
+  public static func array(
+    description: String,
+    isRequired: Bool = true,
+    items: ToolInput
+  ) -> ToolInput {
+    ToolInput(type: .array, description: description, isRequired: isRequired, items: items)
+  }
+}
+
+private final class ToolInputBox: Codable, Equatable, @unchecked Sendable {
+  var value: ToolInput
+
+  init(_ value: ToolInput) {
+    self.value = value
+  }
+
+  static func == (lhs: ToolInputBox, rhs: ToolInputBox) -> Bool {
+    lhs.value == rhs.value
   }
 }
 

@@ -168,14 +168,104 @@ import Foundation
       name: "search",
       description: "Searches with complex filters.",
       inputs: [
-        "filters": ToolInput(type: .object, description: "Search filters.")
+        "filters": ToolInput(type: .any, description: "Search filters.")
       ]
     ) { _ in
       "done"
     }
 
-    #expect(throws: FoundationModelProviderError.unsupportedToolInputType("object")) {
+    #expect(throws: FoundationModelProviderError.unsupportedToolInputType("any")) {
       _ = try FoundationModelToolAdapter(tool: tool)
+    }
+  }
+}
+
+@Test func foundationToolAdapterAcceptsNestedObjectAndArraySchemas() async throws {
+  if #available(macOS 26.0, *) {
+    let tool = ClosureTool(
+      name: "create_trip",
+      description: "Creates a trip plan.",
+      inputs: [
+        "traveler": .object(
+          description: "Traveler details.",
+          properties: [
+            "name": ToolInput(type: .string, description: "Traveler name."),
+            "age": ToolInput(type: .integer, description: "Traveler age.")
+          ]
+        ),
+        "cities": .array(
+          description: "Cities to visit.",
+          items: ToolInput(type: .string, description: "City name.")
+        )
+      ]
+    ) { arguments in
+      "\(arguments["traveler", default: ""])|\(arguments["cities", default: ""])"
+    }
+
+    _ = try FoundationModelToolAdapter(tool: tool)
+  }
+}
+
+@Test func foundationToolAdapterPassesComplexArgumentsAsJSONStrings() async throws {
+  if #available(macOS 26.0, *) {
+    let tool = ClosureTool(
+      name: "create_trip",
+      description: "Creates a trip plan.",
+      inputs: [
+        "traveler": .object(
+          description: "Traveler details.",
+          properties: [
+            "name": ToolInput(type: .string, description: "Traveler name."),
+            "age": ToolInput(type: .integer, description: "Traveler age.")
+          ]
+        ),
+        "cities": .array(
+          description: "Cities to visit.",
+          items: ToolInput(type: .string, description: "City name.")
+        )
+      ]
+    ) { arguments in
+      "\(arguments["traveler", default: ""])|\(arguments["cities", default: ""])"
+    }
+
+    let adapter = try FoundationModelToolAdapter(tool: tool)
+    let output = try await adapter.call(
+      arguments: GeneratedContent(properties: [
+        "traveler": GeneratedContent(properties: [
+          "name": "Rudrank",
+          "age": 26
+        ]),
+        "cities": GeneratedContent(elements: [
+          "Tokyo",
+          "Kyoto"
+        ])
+      ])
+    )
+
+    #expect(output.contains(#""name": "Rudrank""#))
+    #expect(output.contains(#""age": 26"#))
+    #expect(output.contains(#"["Tokyo", "Kyoto"]"#))
+  }
+}
+
+@Test func foundationSchemaAdapterRejectsObjectWithoutProperties() async throws {
+  if #available(macOS 26.0, *) {
+    #expect(throws: FoundationModelProviderError.invalidToolInputSchema("Object 'Payload' must define properties.")) {
+      _ = try FoundationModelSchemaAdapter.dynamicSchema(
+        for: ToolInput(type: .object, description: "Payload."),
+        nameHint: "Payload"
+      )
+    }
+  }
+}
+
+@Test func foundationSchemaAdapterRejectsArrayWithoutItems() async throws {
+  if #available(macOS 26.0, *) {
+    #expect(throws: FoundationModelProviderError.invalidToolInputSchema("Array 'Items' must define an item schema.")) {
+      _ = try FoundationModelSchemaAdapter.dynamicSchema(
+        for: ToolInput(type: .array, description: "Items."),
+        nameHint: "Items"
+      )
     }
   }
 }

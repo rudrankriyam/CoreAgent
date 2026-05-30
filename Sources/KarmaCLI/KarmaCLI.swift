@@ -16,6 +16,7 @@ struct KarmaCLI {
       let enablesDemoTools = arguments.removeAll("--demo-tools")
       let enablesVerboseOutput = arguments.removeAll("--verbose")
       let enablesStreaming = arguments.removeAll("--stream")
+      let enablesStructuredDemo = arguments.removeAll("--structured-demo")
       let tracePath = arguments.removeOptionValue("--trace")
       let prompt = arguments.joined(separator: " ")
 
@@ -23,6 +24,24 @@ struct KarmaCLI {
         let provider = FoundationModelProvider(
           instructions: "Answer clearly and concisely. You are running inside KarmaKit."
         )
+        if enablesStructuredDemo {
+          let output = try await provider.generateStructuredContent(
+            prompt: prompt,
+            schemaName: "KarmaStructuredDemo",
+            schemaDescription: "A concise structured response.",
+            properties: [
+              "title": ToolInput(type: .string, description: "A short title."),
+              "summary": ToolInput(type: .string, description: "One sentence summary."),
+              "tags": .array(
+                description: "Two to four lowercase tags.",
+                items: ToolInput(type: .string, description: "A tag.")
+              )
+            ]
+          )
+          print(output)
+          return
+        }
+
         let agent = try ToolCallingAgent(
           tools: enablesDemoTools ? DemoTools.all : [],
           model: provider,
@@ -63,6 +82,7 @@ struct KarmaCLI {
     print("       karma --verbose --demo-tools <prompt>")
     print("       karma --stream <prompt>")
     print("       karma --trace /tmp/karma-trace.json <prompt>")
+    print("       karma --structured-demo <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
   }
 }

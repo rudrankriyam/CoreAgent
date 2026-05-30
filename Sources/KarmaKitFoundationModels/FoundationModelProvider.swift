@@ -8,6 +8,7 @@ import KarmaKit
 public enum FoundationModelProviderError: Error, CustomStringConvertible, Equatable, Sendable {
   case unavailable(String)
   case unsupportedToolInputType(String)
+  case invalidToolInputSchema(String)
   case invalidToolArguments(tool: String, message: String)
 
   public var description: String {
@@ -16,6 +17,8 @@ public enum FoundationModelProviderError: Error, CustomStringConvertible, Equata
       return "Foundation Models is unavailable: \(reason)"
     case .unsupportedToolInputType(let type):
       return "Foundation Models does not support tool input type '\(type)' yet."
+    case .invalidToolInputSchema(let message):
+      return "Invalid tool input schema: \(message)"
     case .invalidToolArguments(let tool, let message):
       return "Invalid arguments for tool '\(tool)': \(message)"
     }
@@ -78,6 +81,31 @@ public struct FoundationModelProvider: StreamingModelProvider {
     }
 
     return .finalAnswer(finalContent, events: FoundationModelTranscriptEvents.makeEvents(from: session.transcript))
+  }
+
+  public func generateStructuredContent(
+    prompt: String,
+    schemaName: String,
+    schemaDescription: String? = nil,
+    properties: [String: ToolInput],
+    includeSchemaInPrompt: Bool = true
+  ) async throws -> String {
+    try validateAvailability()
+
+    let root = try FoundationModelSchemaAdapter.makeObjectSchema(
+      name: schemaName,
+      description: schemaDescription,
+      properties: properties
+    )
+    let schema = try GenerationSchema(root: root, dependencies: [])
+    let session = LanguageModelSession(model: model, instructions: instructions)
+    let response = try await session.respond(
+      to: prompt,
+      schema: schema,
+      includeSchemaInPrompt: includeSchemaInPrompt,
+      options: options
+    )
+    return response.content.jsonString
   }
 
   private func validateAvailability() throws {
@@ -156,7 +184,7 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
 
   public init(tool: any KarmaKit.Tool) throws {
     self.tool = tool
-    self.parameters = try Self.makeParameters(for: tool)
+    self.parameters = try FoundationModelSchemaAdapter.makeToolParameters(for: tool)
   }
 
   public var name: String { tool.name }
@@ -166,41 +194,6 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
   public func call(arguments: GeneratedContent) async throws -> String {
     let decodedArguments = try Self.decode(arguments, for: tool)
     return try await tool.call(arguments: decodedArguments)
-  }
-
-  private static func makeParameters(for tool: any KarmaKit.Tool) throws -> GenerationSchema {
-    let properties = try tool.inputs
-      .sorted(by: { $0.key < $1.key })
-      .map { name, input in
-        try DynamicGenerationSchema.Property(
-          name: name,
-          description: input.description,
-          schema: dynamicSchema(for: input),
-          isOptional: !input.isRequired
-        )
-      }
-
-    let root = DynamicGenerationSchema(
-      name: "\(tool.name)Arguments",
-      description: "Arguments for \(tool.name).",
-      properties: properties
-    )
-    return try GenerationSchema(root: root, dependencies: [])
-  }
-
-  private static func dynamicSchema(for input: ToolInput) throws -> DynamicGenerationSchema {
-    switch input.type {
-    case .string:
-      return DynamicGenerationSchema(type: String.self)
-    case .integer:
-      return DynamicGenerationSchema(type: Int.self)
-    case .number:
-      return DynamicGenerationSchema(type: Double.self)
-    case .boolean:
-      return DynamicGenerationSchema(type: Bool.self)
-    case .object, .array, .any:
-      throw FoundationModelProviderError.unsupportedToolInputType(input.type.rawValue)
-    }
   }
 
   private static func decode(_ content: GeneratedContent, for tool: any KarmaKit.Tool) throws -> [String: String] {
@@ -217,7 +210,9 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
           arguments[name] = String(try content.value(Double.self, forProperty: name))
         case .boolean:
           arguments[name] = String(try content.value(Bool.self, forProperty: name))
-        case .object, .array, .any:
+        case .object, .array:
+          arguments[name] = try content.value(GeneratedContent.self, forProperty: name).jsonString
+        case .any:
           throw FoundationModelProviderError.unsupportedToolInputType(input.type.rawValue)
         }
       } catch {
@@ -228,5 +223,81 @@ public struct FoundationModelToolAdapter: FoundationModels.Tool {
     }
 
     return arguments
+  }
+}
+
+@available(iOS 26.0, macOS 26.0, *)
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+public enum FoundationModelSchemaAdapter {
+  public static func makeToolParameters(for tool: any KarmaKit.Tool) throws -> GenerationSchema {
+    let root = try makeObjectSchema(
+      name: "\(tool.name)Arguments",
+      description: "Arguments for \(tool.name).",
+      properties: tool.inputs
+    )
+    return try GenerationSchema(root: root, dependencies: [])
+  }
+
+  public static func makeObjectSchema(
+    name: String,
+    description: String? = nil,
+    properties: [String: ToolInput]
+  ) throws -> DynamicGenerationSchema {
+    let dynamicProperties = try properties
+      .sorted(by: { $0.key < $1.key })
+      .map { name, input in
+        try DynamicGenerationSchema.Property(
+          name: name,
+          description: input.description,
+          schema: dynamicSchema(for: input, nameHint: name.karmaSchemaName),
+          isOptional: !input.isRequired
+        )
+      }
+
+    return DynamicGenerationSchema(
+      name: name.karmaSchemaName,
+      description: description,
+      properties: dynamicProperties
+    )
+  }
+
+  public static func dynamicSchema(for input: ToolInput, nameHint: String = "Value") throws -> DynamicGenerationSchema {
+    switch input.type {
+    case .string:
+      return DynamicGenerationSchema(type: String.self)
+    case .integer:
+      return DynamicGenerationSchema(type: Int.self)
+    case .number:
+      return DynamicGenerationSchema(type: Double.self)
+    case .boolean:
+      return DynamicGenerationSchema(type: Bool.self)
+    case .object:
+      guard !input.properties.isEmpty else {
+        throw FoundationModelProviderError.invalidToolInputSchema("Object '\(nameHint)' must define properties.")
+      }
+      return try makeObjectSchema(
+        name: nameHint,
+        description: input.description,
+        properties: input.properties
+      )
+    case .array:
+      guard let items = input.items else {
+        throw FoundationModelProviderError.invalidToolInputSchema("Array '\(nameHint)' must define an item schema.")
+      }
+      return try DynamicGenerationSchema(arrayOf: dynamicSchema(for: items, nameHint: "\(nameHint)Item"))
+    case .any:
+      throw FoundationModelProviderError.unsupportedToolInputType(input.type.rawValue)
+    }
+  }
+}
+
+private extension String {
+  var karmaSchemaName: String {
+    let parts = split { !$0.isLetter && !$0.isNumber }
+    let name = parts.map { part in
+      part.prefix(1).uppercased() + part.dropFirst()
+    }.joined()
+    return name.isEmpty ? "Schema" : name
   }
 }
