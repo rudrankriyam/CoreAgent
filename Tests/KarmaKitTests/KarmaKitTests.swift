@@ -76,6 +76,19 @@ import Foundation
   }
 }
 
+@Test func agentWithZeroMaxStepsFailsWithoutCallingModel() async throws {
+  let model = ScriptedModel(outputs: [
+    .finalAnswer("should not run")
+  ])
+  let agent = ToolCallingAgent(tools: [], model: model, maxSteps: 0)
+
+  await #expect(throws: KarmaError.maxStepsReached(0)) {
+    _ = try await agent.run("Do nothing")
+  }
+  #expect(agent.memory.steps.isEmpty)
+  #expect(agent.memory.events.map(\.kind) == [.runStarted, .runFailed])
+}
+
 @Test func missingToolFailsClearly() async throws {
   let model = ScriptedModel(outputs: [
     .toolCalls([ToolCall(name: "unknown_tool")])
@@ -526,6 +539,76 @@ import Foundation
   } catch KarmaError.timedOut(let operation, _) {
     #expect(operation == "tool.slow")
   }
+}
+
+@Test func oversizedToolOutputIsShortenedBeforeEnteringMemory() async throws {
+  let tool = ClosureTool(name: "large", description: "Returns a large result.", inputs: [:]) { _ in
+    "abcdef"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "large")]),
+    .finalAnswer("done")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    limits: AgentLimits(maximumToolOutputCharacters: 3)
+  )
+
+  let run = try await agent.run("Call large")
+  let output = run.steps.first?.toolResults.first?.output ?? ""
+
+  #expect(output == "abc\n[Output shortened from 6 to 3 characters.]")
+  #expect(run.messages.contains { $0.role == .tool && $0.content == output })
+  #expect(run.events.contains { $0.kind == .toolOutputLimited })
+  #expect(run.events.first { $0.kind == .toolCallFinished }?.toolResult?.output == output)
+}
+
+@Test func toolOutputLimitCanShortenToOnlyANotice() async throws {
+  let tool = ClosureTool(name: "large", description: "Returns a large result.", inputs: [:]) { _ in
+    "abcdef"
+  }
+  let model = ScriptedModel(outputs: [
+    .toolCalls([ToolCall(id: "call_1", name: "large")]),
+    .finalAnswer("done")
+  ])
+  let agent = ToolCallingAgent(
+    tools: [tool],
+    model: model,
+    limits: AgentLimits(maximumToolOutputCharacters: 0)
+  )
+
+  let run = try await agent.run("Call large")
+
+  #expect(run.steps.first?.toolResults.first?.output == "[Output shortened from 6 to 0 characters.]")
+}
+
+@Test func providerToolOutputEventsAreShortenedBeforeExport() async throws {
+  let model = ScriptedModel(outputs: [
+    .finalAnswer(
+      "done",
+      events: [
+        AgentEvent(
+          kind: .toolCallFinished,
+          message: "abcdef",
+          toolResult: ToolResult(callID: "call_1", output: "abcdef")
+        )
+      ]
+    )
+  ])
+  let agent = ToolCallingAgent(
+    tools: [],
+    model: model,
+    limits: AgentLimits(maximumToolOutputCharacters: 2)
+  )
+
+  let run = try await agent.run("Return provider event")
+  let limitedEvent = run.events.first { $0.kind == .toolOutputLimited }
+  let finishedEvent = run.events.first { $0.kind == .toolCallFinished }
+
+  #expect(limitedEvent?.toolResult?.output == "ab\n[Output shortened from 6 to 2 characters.]")
+  #expect(finishedEvent?.message == "ab\n[Output shortened from 6 to 2 characters.]")
+  #expect(finishedEvent?.toolResult?.output == "ab\n[Output shortened from 6 to 2 characters.]")
 }
 
 @Test func streamingRunEmitsPartialResponses() async throws {

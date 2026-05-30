@@ -43,6 +43,7 @@ swift run karma --stream "Write one sentence about local agents."
 swift run karma --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
 swift run karma --receipt /tmp/karma-receipt.json "Explain tool calling in one sentence."
 swift run karma --no-redaction --trace /tmp/karma-trace.json "Explain tool calling in one sentence."
+swift run karma --max-tool-output-chars 4000 --demo-tools "Search files for local agents and summarize the matches."
 swift run karma --structured-demo "Summarize Foundation Models agents."
 swift run karma --demo-tools "Use calculate to evaluate 2 + 3 * 5. Return only the result."
 swift run karma --demo-tools --allow-file-dir /tmp "Read /tmp/example.txt and summarize it."
@@ -67,6 +68,7 @@ swift run karma --demo-tools --allow-file-dir /tmp "Search files for local agent
 - `FinalAnswerValidator`: validates answers before a run succeeds.
 - `RetryPolicy`: retries transient model failures.
 - `AgentTimeouts`: limits long-running tool calls.
+- `AgentLimits`: shortens oversized tool output before it enters agent memory.
 - `StreamingModelProvider`: streams partial responses when a provider supports it.
 - `AgentRedactionPolicy`: removes token-like values from exported traces and receipts by default.
 - `FileAgentMemoryStore`: saves and reloads agent memory as JSON.

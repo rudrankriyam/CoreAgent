@@ -183,6 +183,7 @@ public enum AgentEventKind: String, Codable, Equatable, Sendable {
   case modelRetry
   case toolCallStarted
   case toolCallFinished
+  case toolOutputLimited
   case partialResponse
   case finalAnswerAccepted
   case runFailed
@@ -445,6 +446,16 @@ public struct AgentTimeouts: Equatable, Sendable {
   }
 
   public static let none = AgentTimeouts()
+}
+
+public struct AgentLimits: Equatable, Sendable {
+  public var maximumToolOutputCharacters: Int?
+
+  public init(maximumToolOutputCharacters: Int? = nil) {
+    self.maximumToolOutputCharacters = maximumToolOutputCharacters
+  }
+
+  public static let none = AgentLimits()
 }
 
 public struct ActionStep: Codable, Equatable, Sendable {
@@ -888,6 +899,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
   public let resetsMemoryBeforeRun: Bool
   public let retryPolicy: RetryPolicy
   public let timeouts: AgentTimeouts
+  public let limits: AgentLimits
   public let memoryStore: (any AgentMemoryStore)?
   public private(set) var memory: AgentMemory
 
@@ -902,6 +914,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     resetsMemoryBeforeRun: Bool = true,
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
+    limits: AgentLimits = .none,
     memoryStore: (any AgentMemoryStore)? = nil
   ) {
     self.model = model
@@ -915,6 +928,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     self.resetsMemoryBeforeRun = resetsMemoryBeforeRun
     self.retryPolicy = retryPolicy
     self.timeouts = timeouts
+    self.limits = limits
     self.memoryStore = memoryStore
     self.memory = AgentMemory(systemPrompt: systemPrompt)
   }
@@ -930,6 +944,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
     resetsMemoryBeforeRun: Bool = true,
     retryPolicy: RetryPolicy = .none,
     timeouts: AgentTimeouts = .none,
+    limits: AgentLimits = .none,
     memoryStore: (any AgentMemoryStore)? = nil,
     validatesToolNames: Bool
   ) throws {
@@ -953,6 +968,7 @@ public final class ToolCallingAgent: @unchecked Sendable {
       resetsMemoryBeforeRun: resetsMemoryBeforeRun,
       retryPolicy: retryPolicy,
       timeouts: timeouts,
+      limits: limits,
       memoryStore: memoryStore
     )
   }
@@ -981,6 +997,12 @@ public final class ToolCallingAgent: @unchecked Sendable {
     await emit(.init(kind: .runStarted, message: task))
     memory.addTask(task)
 
+    guard maxSteps > 0 else {
+      let error = KarmaError.maxStepsReached(maxSteps)
+      await emit(.init(kind: .runFailed, message: String(describing: error)))
+      throw error
+    }
+
     do {
       for stepNumber in 1...maxSteps {
         let output = try await generateModelOutput(
@@ -992,7 +1014,20 @@ public final class ToolCallingAgent: @unchecked Sendable {
         switch output {
         case .finalAnswer(let answer, let providerEvents):
           for event in providerEvents {
-            await emit(event)
+            let limitedEvent = limitProviderEvent(event)
+            if let message = limitedEvent.message {
+              await emit(
+                .init(
+                  kind: .toolOutputLimited,
+                  stepNumber: event.stepNumber ?? stepNumber,
+                  message: message,
+                  toolCall: event.toolCall,
+                  toolResult: limitedEvent.event.toolResult,
+                  toolManifest: event.toolManifest
+                )
+              )
+            }
+            await emit(limitedEvent.event)
           }
           try await validateFinalAnswer(answer, task: task)
           memory.addAssistantMessage(answer)
@@ -1012,8 +1047,21 @@ public final class ToolCallingAgent: @unchecked Sendable {
               .init(call: call, stepNumber: stepNumber, task: task, toolManifest: manifest)
             )
             await emit(.init(kind: .toolCallStarted, stepNumber: stepNumber, toolCall: call, toolManifest: manifest))
-            let output = try await callTool(tool, arguments: call.arguments)
-            let result = ToolResult(callID: call.id, output: output)
+            let rawOutput = try await callTool(tool, arguments: call.arguments)
+            let limitedOutput = limitToolOutput(rawOutput)
+            let result = ToolResult(callID: call.id, output: limitedOutput.output)
+            if let message = limitedOutput.message {
+              await emit(
+                .init(
+                  kind: .toolOutputLimited,
+                  stepNumber: stepNumber,
+                  message: message,
+                  toolCall: call,
+                  toolResult: result,
+                  toolManifest: manifest
+                )
+              )
+            }
             await emit(
               .init(
                 kind: .toolCallFinished,
@@ -1088,6 +1136,46 @@ public final class ToolCallingAgent: @unchecked Sendable {
     return try await withTimeout(timeout, operation: "tool.\(tool.name)") {
       try await tool.call(arguments: arguments)
     }
+  }
+
+  private func limitToolOutput(_ output: String) -> (output: String, message: String?) {
+    guard let maximumCharacters = limits.maximumToolOutputCharacters, output.count > maximumCharacters else {
+      return (output, nil)
+    }
+
+    let safeMaximum = max(0, maximumCharacters)
+    let shortenedOutput = String(output.prefix(safeMaximum))
+    let notice = "[Output shortened from \(output.count) to \(safeMaximum) characters.]"
+    let separator = shortenedOutput.isEmpty ? "" : "\n"
+    return (
+      "\(shortenedOutput)\(separator)\(notice)",
+      "Tool output exceeded \(safeMaximum) characters and was shortened from \(output.count) characters."
+    )
+  }
+
+  private func limitProviderEvent(_ event: AgentEvent) -> (event: AgentEvent, message: String?) {
+    guard let toolResult = event.toolResult else {
+      return (event, nil)
+    }
+
+    let limitedOutput = limitToolOutput(toolResult.output)
+    guard let message = limitedOutput.message else {
+      return (event, nil)
+    }
+
+    let limitedResult = ToolResult(callID: toolResult.callID, output: limitedOutput.output)
+    let limitedMessage = event.message == toolResult.output ? limitedOutput.output : event.message
+    return (
+      AgentEvent(
+        kind: event.kind,
+        stepNumber: event.stepNumber,
+        message: limitedMessage,
+        toolCall: event.toolCall,
+        toolResult: limitedResult,
+        toolManifest: event.toolManifest
+      ),
+      message
+    )
   }
 
   private func validateFinalAnswer(_ answer: String, task: String) async throws {

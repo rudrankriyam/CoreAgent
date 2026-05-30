@@ -22,6 +22,7 @@ struct KarmaCLI {
       let disablesRedaction = arguments.removeAll("--no-redaction")
       let tracePath = arguments.removeOptionValue("--trace")
       let receiptPath = arguments.removeOptionValue("--receipt")
+      let maximumToolOutputCharacters = arguments.removeOptionValue("--max-tool-output-chars").flatMap(Int.init)
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
       let prompt = arguments.joined(separator: " ")
       let tools = enablesDemoTools ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories) : []
@@ -58,6 +59,7 @@ struct KarmaCLI {
           tools: tools,
           model: provider,
           retryPolicy: RetryPolicy(maximumRetries: 1, delay: .milliseconds(200)),
+          limits: AgentLimits(maximumToolOutputCharacters: maximumToolOutputCharacters),
           validatesToolNames: true
         )
         let run: AgentRun
@@ -102,6 +104,7 @@ struct KarmaCLI {
     print("       karma --trace /tmp/karma-trace.json <prompt>")
     print("       karma --receipt /tmp/karma-receipt.json <prompt>")
     print("       karma --no-redaction --trace /tmp/karma-trace.json <prompt>")
+    print("       karma --max-tool-output-chars 4000 --demo-tools <prompt>")
     print("       karma --structured-demo <prompt>")
     print("       karma --demo-tools --allow-file-dir /tmp <prompt>")
     print("Example: karma Summarize tool calling in one sentence")
