@@ -215,6 +215,35 @@ import Foundation
   #expect(first.digest != second.digest)
 }
 
+@Test func toolManifestRedactionCleansDescriptionsAndNestedInputs() throws {
+  let manifest = try ToolManifest(
+    name: "send",
+    description: "Sends with api_key=tool-secret.",
+    inputs: [
+      "payload": .object(
+        description: "Uses token=payload-secret.",
+        properties: [
+          "items": .array(
+            description: "Includes authorization: Bearer array-secret.",
+            items: ToolInput(type: .string, description: "Value with password=item-secret.")
+          )
+        ]
+      )
+    ]
+  )
+
+  let redacted = try manifest.redacted()
+  let data = try JSONEncoder().encode(redacted)
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(!json.contains("tool-secret"))
+  #expect(!json.contains("payload-secret"))
+  #expect(!json.contains("array-secret"))
+  #expect(!json.contains("item-secret"))
+  #expect(json.contains("[REDACTED]"))
+  #expect(redacted.digest != manifest.digest)
+}
+
 @Test func trustedToolExecutionPolicyAllowsApprovedManifestAndRecordsIt() async throws {
   let tool = ClosureTool(name: "lookup", description: "Looks up public data.", inputs: [:]) { _ in
     "approved"
@@ -304,6 +333,35 @@ import Foundation
   #expect(rebuiltAgent.limits.maximumToolOutputCharacters == 100)
   #expect(rebuiltAgent.limits.maximumContextMessages == 12)
   #expect(rebuiltAgent.toolCallExecutionMode == .parallel)
+}
+
+@Test func agentConfigurationRedactionCleansPromptAndToolManifests() throws {
+  let configuration = AgentConfiguration(
+    systemPrompt: "Use api_key=system-secret.",
+    maxSteps: 3,
+    resetsMemoryBeforeRun: true,
+    retryPolicy: .none,
+    timeouts: .none,
+    limits: .none,
+    toolManifests: [
+      try ToolManifest(
+        name: "lookup",
+        description: "Looks up token=tool-secret.",
+        inputs: [
+          "query": ToolInput(type: .string, description: "Search with client_secret=input-secret.")
+        ]
+      )
+    ]
+  )
+
+  let redacted = try configuration.redacted()
+  let data = try JSONEncoder().encode(redacted)
+  let json = String(decoding: data, as: UTF8.self)
+
+  #expect(!json.contains("system-secret"))
+  #expect(!json.contains("tool-secret"))
+  #expect(!json.contains("input-secret"))
+  #expect(json.contains("[REDACTED]"))
 }
 
 @Test func agentConfigurationDefaultsMissingToolExecutionMode() throws {

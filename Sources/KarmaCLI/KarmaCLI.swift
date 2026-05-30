@@ -40,7 +40,7 @@ struct KarmaCLI {
       )
 
       if listsTools {
-        try printToolManifests(for: tools)
+        try printToolManifests(for: tools, redactionPolicy: redactionPolicy)
         return
       }
 
@@ -51,7 +51,8 @@ struct KarmaCLI {
           maximumToolOutputCharacters: maximumToolOutputCharacters,
           maximumContextMessages: maximumContextMessages,
           timeouts: timeouts,
-          toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential
+          toolCallExecutionMode: enablesParallelTools ? .parallel : .sequential,
+          redactionPolicy: redactionPolicy
         )
         return
       }
@@ -162,8 +163,8 @@ struct KarmaCLI {
     print("Example: karma Summarize tool calling in one sentence")
   }
 
-  private static func printToolManifests(for tools: [any Tool]) throws {
-    let manifests = try tools.map(ToolManifest.init(tool:))
+  private static func printToolManifests(for tools: [any Tool], redactionPolicy: AgentRedactionPolicy) throws {
+    let manifests = try tools.map { try ToolManifest(tool: $0).redacted(using: redactionPolicy) }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let data = try encoder.encode(manifests)
@@ -192,7 +193,8 @@ struct KarmaCLI {
     maximumToolOutputCharacters: Int?,
     maximumContextMessages: Int?,
     timeouts: AgentTimeouts,
-    toolCallExecutionMode: ToolCallExecutionMode
+    toolCallExecutionMode: ToolCallExecutionMode,
+    redactionPolicy: AgentRedactionPolicy
   ) throws {
     let configuration = AgentConfiguration(
       systemPrompt: "You are a helpful Swift agent. Use tools when useful, then return a final answer.",
@@ -210,7 +212,7 @@ struct KarmaCLI {
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    let data = try encoder.encode(configuration)
+    let data = try encoder.encode(configuration.redacted(using: redactionPolicy))
     print(String(decoding: data, as: UTF8.self))
   }
 }

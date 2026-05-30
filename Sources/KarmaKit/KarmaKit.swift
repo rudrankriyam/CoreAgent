@@ -89,6 +89,18 @@ public struct ToolInput: Codable, Equatable, Sendable {
   ) -> ToolInput {
     ToolInput(type: .array, description: description, isRequired: isRequired, items: items)
   }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) -> ToolInput {
+    ToolInput(
+      type: type,
+      description: policy.redact(description),
+      isRequired: isRequired,
+      properties: properties.reduce(into: [String: ToolInput]()) { partialResult, pair in
+        partialResult[pair.key] = pair.value.redacted(using: policy)
+      },
+      items: items?.redacted(using: policy)
+    )
+  }
 }
 
 private final class ToolInputBox: Codable, Equatable, @unchecked Sendable {
@@ -134,6 +146,16 @@ public struct ToolManifest: Codable, Equatable, Sendable {
 
   public init(tool: any Tool) throws {
     try self.init(name: tool.name, description: tool.description, inputs: tool.inputs)
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) throws -> ToolManifest {
+    try ToolManifest(
+      name: name,
+      description: policy.redact(description),
+      inputs: inputs.reduce(into: [String: ToolInput]()) { partialResult, pair in
+        partialResult[pair.key] = pair.value.redacted(using: policy)
+      }
+    )
   }
 
   private static func digest(name: String, description: String, inputs: [String: ToolInput]) throws -> String {
@@ -782,6 +804,20 @@ public struct AgentConfiguration: Codable, Equatable, Sendable {
         "Configured tools [\(configuredNames)] do not match runtime tools [\(runtimeNames)]."
       )
     }
+  }
+
+  public func redacted(using policy: AgentRedactionPolicy = .standard) throws -> AgentConfiguration {
+    try AgentConfiguration(
+      version: version,
+      systemPrompt: policy.redact(systemPrompt),
+      maxSteps: maxSteps,
+      resetsMemoryBeforeRun: resetsMemoryBeforeRun,
+      retryPolicy: retryPolicy,
+      timeouts: timeouts,
+      limits: limits,
+      toolCallExecutionMode: toolCallExecutionMode,
+      toolManifests: toolManifests.map { try $0.redacted(using: policy) }
+    )
   }
 }
 
