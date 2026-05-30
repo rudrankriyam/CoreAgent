@@ -856,6 +856,15 @@ public struct AgentMemorySummary: Codable, Equatable, Sendable {
   public var durableFacts: [String]
   public var toolResultsWorthRemembering: [String]
 
+  private enum CodingKeys: String, CodingKey {
+    case overview
+    case userPreferences
+    case decisions
+    case openThreads
+    case durableFacts
+    case toolResultsWorthRemembering
+  }
+
   public init(
     overview: String,
     userPreferences: [String] = [],
@@ -872,6 +881,28 @@ public struct AgentMemorySummary: Codable, Equatable, Sendable {
     self.toolResultsWorthRemembering = toolResultsWorthRemembering
   }
 
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      overview: try container.decodeIfPresent(String.self, forKey: .overview) ?? "",
+      userPreferences: try container.decodeFlexibleStringList(forKey: .userPreferences),
+      decisions: try container.decodeFlexibleStringList(forKey: .decisions),
+      openThreads: try container.decodeFlexibleStringList(forKey: .openThreads),
+      durableFacts: try container.decodeFlexibleStringList(forKey: .durableFacts),
+      toolResultsWorthRemembering: try container.decodeFlexibleStringList(forKey: .toolResultsWorthRemembering)
+    )
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(overview, forKey: .overview)
+    try container.encode(userPreferences, forKey: .userPreferences)
+    try container.encode(decisions, forKey: .decisions)
+    try container.encode(openThreads, forKey: .openThreads)
+    try container.encode(durableFacts, forKey: .durableFacts)
+    try container.encode(toolResultsWorthRemembering, forKey: .toolResultsWorthRemembering)
+  }
+
   public var message: String {
     [
       "Earlier conversation summary:",
@@ -884,6 +915,15 @@ public struct AgentMemorySummary: Codable, Equatable, Sendable {
     ].filter { !$0.isEmpty }.joined(separator: "\n")
   }
 
+  fileprivate var hasContent: Bool {
+    !overview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || !userPreferences.isEmpty
+      || !decisions.isEmpty
+      || !openThreads.isEmpty
+      || !durableFacts.isEmpty
+      || !toolResultsWorthRemembering.isEmpty
+  }
+
   private func section(_ title: String, _ values: [String]) -> String {
     let cleanedValues = values.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
     guard !cleanedValues.isEmpty else {
@@ -891,6 +931,21 @@ public struct AgentMemorySummary: Codable, Equatable, Sendable {
     }
 
     return "\(title):\n" + cleanedValues.map { "- \($0)" }.joined(separator: "\n")
+  }
+}
+
+private extension KeyedDecodingContainer {
+  func decodeFlexibleStringList(forKey key: Key) throws -> [String] {
+    if let values = try? decode([String].self, forKey: key) {
+      return values
+    }
+
+    if let value = try? decode(String.self, forKey: key) {
+      let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmedValue.isEmpty ? [] : [trimmedValue]
+    }
+
+    return []
   }
 }
 
@@ -961,7 +1016,7 @@ public struct ModelConversationCompactor: ConversationCompactor {
         return try await fallback.compact(messages: messages, targetTokenBudget: targetTokenBudget)
       }
 
-      return try Self.decodeSummary(from: answer)
+      return try await Self.decodeSummary(from: answer, fallbackMessages: messages, targetTokenBudget: targetTokenBudget)
     } catch {
       return try await fallback.compact(messages: messages, targetTokenBudget: targetTokenBudget)
     }
@@ -986,17 +1041,78 @@ public struct ModelConversationCompactor: ConversationCompactor {
     """
   }
 
-  private static func decodeSummary(from answer: String) throws -> AgentMemorySummary {
-    let trimmedAnswer = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-    let jsonText: String
-    if let start = trimmedAnswer.firstIndex(of: "{"), let end = trimmedAnswer.lastIndex(of: "}"), start <= end {
-      jsonText = String(trimmedAnswer[start...end])
-    } else {
-      jsonText = trimmedAnswer
+  private static func decodeSummary(
+    from answer: String,
+    fallbackMessages: [AgentMessage],
+    targetTokenBudget: Int
+  ) async throws -> AgentMemorySummary {
+    for candidate in jsonObjectCandidates(from: answer) {
+      if let summary = try? JSONDecoder().decode(AgentMemorySummary.self, from: Data(candidate.utf8)),
+         summary.hasContent {
+        return summary
+      }
+
+      if let wrappedSummary = try? JSONDecoder().decode(
+        WrappedAgentMemorySummary.self,
+        from: Data(candidate.utf8)
+      ), wrappedSummary.summary.hasContent {
+        return wrappedSummary.summary
+      }
     }
 
-    return try JSONDecoder().decode(AgentMemorySummary.self, from: Data(jsonText.utf8))
+    return try await ExcerptConversationCompactor().compact(
+      messages: fallbackMessages,
+      targetTokenBudget: targetTokenBudget
+    )
   }
+
+  private static func jsonObjectCandidates(from text: String) -> [String] {
+    var candidates: [String] = []
+    let characters = Array(text)
+    var depth = 0
+    var startIndex: Int?
+    var isEscaped = false
+    var isInsideString = false
+
+    for (index, character) in characters.enumerated() {
+      if isInsideString {
+        if isEscaped {
+          isEscaped = false
+        } else if character == "\\" {
+          isEscaped = true
+        } else if character == "\"" {
+          isInsideString = false
+        }
+        continue
+      }
+
+      if character == "\"" {
+        isInsideString = true
+      } else if character == "{" {
+        if depth == 0 {
+          startIndex = index
+        }
+        depth += 1
+      } else if character == "}", depth > 0 {
+        depth -= 1
+        if depth == 0, let objectStartIndex = startIndex {
+          candidates.append(String(characters[objectStartIndex...index]))
+          startIndex = nil
+        }
+      }
+    }
+
+    let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if candidates.isEmpty, trimmedText.hasPrefix("{"), trimmedText.hasSuffix("}") {
+      candidates.append(trimmedText)
+    }
+
+    return candidates
+  }
+}
+
+private struct WrappedAgentMemorySummary: Decodable {
+  var summary: AgentMemorySummary
 }
 
 public protocol StreamingModelProvider: ModelProvider {

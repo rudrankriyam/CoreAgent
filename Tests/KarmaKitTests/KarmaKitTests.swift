@@ -2574,6 +2574,55 @@ import Foundation
   #expect(capturedMessages.last?.content.contains("Return JSON only.") == true)
 }
 
+@Test func modelConversationCompactorParsesFencedSummaryWithMissingSections() async throws {
+  let json = """
+  Here is the compacted memory:
+  ```json
+  {
+    "overview": "Memory remains useful.",
+    "userPreferences": "Prefer on-device work.",
+    "openThreads": ["Keep hardening parsing."]
+  }
+  ```
+  """
+  let model = CapturingModel(outputs: [.finalAnswer(json)])
+  let compactor = ModelConversationCompactor(model: model)
+
+  let summary = try await compactor.compact(
+    messages: [AgentMessage(role: .user, content: "Prefer on-device work.")],
+    targetTokenBudget: 128
+  )
+
+  #expect(summary.overview == "Memory remains useful.")
+  #expect(summary.userPreferences == ["Prefer on-device work."])
+  #expect(summary.decisions == [])
+  #expect(summary.openThreads == ["Keep hardening parsing."])
+}
+
+@Test func modelConversationCompactorFindsWrappedSummaryAfterOtherBraces() async throws {
+  let answer = """
+  Ignore the example { "notSummary": true } and use this:
+  {
+    "summary": {
+      "overview": "Wrapped summary parsed.",
+      "decisions": "Use the wrapped summary object.",
+      "durableFacts": ["KarmaKit has structured memory."]
+    }
+  }
+  """
+  let model = CapturingModel(outputs: [.finalAnswer(answer)])
+  let compactor = ModelConversationCompactor(model: model)
+
+  let summary = try await compactor.compact(
+    messages: [AgentMessage(role: .assistant, content: "Decision: use wrapped summaries.")],
+    targetTokenBudget: 128
+  )
+
+  #expect(summary.overview == "Wrapped summary parsed.")
+  #expect(summary.decisions == ["Use the wrapped summary object."])
+  #expect(summary.durableFacts == ["KarmaKit has structured memory."])
+}
+
 @Test func modelConversationCompactorFallsBackWhenProviderCannotSummarize() async throws {
   let model = CapturingModel(outputs: [.toolCalls([ToolCall(name: "unexpected")])])
   let compactor = ModelConversationCompactor(model: model)
