@@ -28,7 +28,7 @@ It is built around Apple Foundation Models today and designed to grow with the b
 Add CoreAgent with Swift Package Manager:
 
 ```swift
-.package(url: "https://github.com/rudrankriyam/CoreAgent.git", branch: "main")
+.package(url: "https://github.com/rudrankriyam/CoreAgent.git", from: "0.1.0")
 ```
 
 Then add the products you need to your target:
