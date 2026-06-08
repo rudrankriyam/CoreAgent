@@ -391,7 +391,8 @@ public struct FoundationModelProvider: StreamingModelProvider {
   }
 
   public func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
-    try validateAvailability()
+    let runtime = activeRuntime()
+    try runtime.validateAvailability()
 
     let audit = FoundationModelToolAudit()
     let prompt = FoundationModelPrompt.makePrompt(messages: messages)
@@ -403,13 +404,13 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = activeRuntime().makeSession(
+    let session = runtime.makeSession(
       tools: foundationTools,
       instructions: instructions
     )
 
-    let inputTokens = try await tokenCount(for: prompt)
-    let toolDefinitionTokens = try await tokenCount(for: foundationTools)
+    let inputTokens = try await runtime.tokenCount(for: prompt)
+    let toolDefinitionTokens = try await runtime.tokenCount(for: foundationTools)
     let response: LanguageModelSession.Response<String>
     do {
       response = try await session.respond(to: prompt, options: options, contextOptions: contextOptions)
@@ -422,7 +423,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
       events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
       usage: AgentUsage(
         inputTokens: inputTokens,
-        outputTokens: try await tokenCount(for: response.content),
+        outputTokens: try await runtime.tokenCount(for: response.content),
         toolDefinitionTokens: toolDefinitionTokens
       )
     )
@@ -445,7 +446,8 @@ public struct FoundationModelProvider: StreamingModelProvider {
     tools: [any CoreAgent.Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
-    try validateAvailability()
+    let runtime = activeRuntime()
+    try runtime.validateAvailability()
 
     let audit = FoundationModelToolAudit()
     let prompt = FoundationModelPrompt.makePrompt(messages: messages)
@@ -457,13 +459,13 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = activeRuntime().makeSession(
+    let session = runtime.makeSession(
       tools: foundationTools,
       instructions: instructions
     )
 
-    let inputTokens = try await tokenCount(for: prompt)
-    let toolDefinitionTokens = try await tokenCount(for: foundationTools)
+    let inputTokens = try await runtime.tokenCount(for: prompt)
+    let toolDefinitionTokens = try await runtime.tokenCount(for: foundationTools)
     var finalContent = ""
 
     do {
@@ -485,7 +487,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
       events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
       usage: AgentUsage(
         inputTokens: inputTokens,
-        outputTokens: try await tokenCount(for: finalContent),
+        outputTokens: try await runtime.tokenCount(for: finalContent),
         toolDefinitionTokens: toolDefinitionTokens
       )
     )
@@ -512,7 +514,8 @@ public struct FoundationModelProvider: StreamingModelProvider {
     properties: [String: ToolInput],
     includeSchemaInPrompt: Bool? = nil
   ) async throws -> String {
-    try validateAvailability()
+    let runtime = activeRuntime()
+    try runtime.validateAvailability()
 
     let root = try FoundationModelSchemaAdapter.makeObjectSchema(
       name: schemaName,
@@ -520,7 +523,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
       properties: properties
     )
     let schema = try GenerationSchema(root: root, dependencies: [])
-    let session = activeRuntime().makeSession(instructions: instructions)
+    let session = runtime.makeSession(instructions: instructions)
     let structuredContextOptions = ContextOptions(
       includeSchemaInPrompt: includeSchemaInPrompt ?? contextOptions.includeSchemaInPrompt ?? true,
       reasoningLevel: contextOptions.reasoningLevel
@@ -534,22 +537,6 @@ public struct FoundationModelProvider: StreamingModelProvider {
     return response.content.jsonString
   }
 
-  private func validateAvailability() throws {
-    try activeRuntime().validateAvailability()
-  }
-
-  private func tokenCount(for prompt: String) async throws -> Int? {
-    try await activeRuntime().tokenCount(for: prompt)
-  }
-
-  private func tokenCount(for prompt: Prompt) async throws -> Int? {
-    try await activeRuntime().tokenCount(for: prompt)
-  }
-
-  private func tokenCount(for tools: [any FoundationModels.Tool]) async throws -> Int? {
-    try await activeRuntime().tokenCount(for: tools)
-  }
-
   private func activeRuntime() -> FoundationModelRuntime {
     runtimeSelection?.resolve() ?? runtime
   }
@@ -559,7 +546,8 @@ public struct FoundationModelProvider: StreamingModelProvider {
     toolTaskDescription: String,
     tools: [any CoreAgent.Tool]
   ) async throws -> ModelOutput {
-    try validateAvailability()
+    let runtime = activeRuntime()
+    try runtime.validateAvailability()
 
     let audit = FoundationModelToolAudit()
     let foundationTools = try tools.map {
@@ -570,13 +558,13 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = activeRuntime().makeSession(
+    let session = runtime.makeSession(
       tools: foundationTools,
       instructions: instructions
     )
 
-    let inputTokens = try await tokenCount(for: prompt)
-    let toolDefinitionTokens = try await tokenCount(for: foundationTools)
+    let inputTokens = try await runtime.tokenCount(for: prompt)
+    let toolDefinitionTokens = try await runtime.tokenCount(for: foundationTools)
     let response: LanguageModelSession.Response<String>
     do {
       response = try await session.respond(to: prompt, options: options, contextOptions: contextOptions)
@@ -589,7 +577,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
       events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
       usage: AgentUsage(
         inputTokens: inputTokens,
-        outputTokens: try await tokenCount(for: response.content),
+        outputTokens: try await runtime.tokenCount(for: response.content),
         toolDefinitionTokens: toolDefinitionTokens
       )
     )
@@ -601,7 +589,8 @@ public struct FoundationModelProvider: StreamingModelProvider {
     tools: [any CoreAgent.Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
-    try validateAvailability()
+    let runtime = activeRuntime()
+    try runtime.validateAvailability()
 
     let audit = FoundationModelToolAudit()
     let foundationTools = try tools.map {
@@ -612,13 +601,13 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = activeRuntime().makeSession(
+    let session = runtime.makeSession(
       tools: foundationTools,
       instructions: instructions
     )
 
-    let inputTokens = try await tokenCount(for: prompt)
-    let toolDefinitionTokens = try await tokenCount(for: foundationTools)
+    let inputTokens = try await runtime.tokenCount(for: prompt)
+    let toolDefinitionTokens = try await runtime.tokenCount(for: foundationTools)
     var finalContent = ""
 
     do {
@@ -640,7 +629,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
       events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
       usage: AgentUsage(
         inputTokens: inputTokens,
-        outputTokens: try await tokenCount(for: finalContent),
+        outputTokens: try await runtime.tokenCount(for: finalContent),
         toolDefinitionTokens: toolDefinitionTokens
       )
     )
