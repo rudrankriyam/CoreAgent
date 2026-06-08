@@ -40,6 +40,103 @@ public struct FoundationModelToolExecutionError: AgentEventProvidingError, Custo
 
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
+public enum FoundationModelRuntimeKind: String, Codable, Equatable, Sendable {
+  case system
+  case privateCloudCompute
+}
+
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+public enum FoundationModelRuntimeSelection: Sendable {
+  case system(SystemLanguageModel = .default)
+  case privateCloudCompute(PrivateCloudComputeLanguageModel = PrivateCloudComputeLanguageModel())
+  case preferPrivateCloudCompute(
+    privateCloudCompute: PrivateCloudComputeLanguageModel = PrivateCloudComputeLanguageModel(),
+    fallback: SystemLanguageModel = .default
+  )
+
+  public func resolve() -> FoundationModelRuntime {
+    switch self {
+    case .system(let model):
+      return .system(model)
+    case .privateCloudCompute(let model):
+      return .privateCloudCompute(model)
+    case .preferPrivateCloudCompute(let privateCloudCompute, let fallback):
+      switch privateCloudCompute.availability {
+      case .available:
+        return .privateCloudCompute(privateCloudCompute)
+      case .unavailable:
+        return .system(fallback)
+      }
+    }
+  }
+}
+
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+public struct FoundationModelRuntimeSnapshot: Codable, Equatable, Sendable {
+  public var kind: FoundationModelRuntimeKind
+  public var isAvailable: Bool
+  public var availabilityDescription: String
+  public var contextSize: Int?
+  public var supportsVision: Bool
+  public var supportsGuidedGeneration: Bool
+  public var supportsReasoning: Bool
+  public var supportsToolCalling: Bool
+  public var privateCloudComputeQuota: PrivateCloudComputeQuotaSnapshot?
+  public var supportsCurrentLocale: Bool?
+
+  public init(
+    kind: FoundationModelRuntimeKind,
+    isAvailable: Bool,
+    availabilityDescription: String,
+    contextSize: Int?,
+    supportsVision: Bool,
+    supportsGuidedGeneration: Bool,
+    supportsReasoning: Bool,
+    supportsToolCalling: Bool,
+    privateCloudComputeQuota: PrivateCloudComputeQuotaSnapshot? = nil,
+    supportsCurrentLocale: Bool? = nil
+  ) {
+    self.kind = kind
+    self.isAvailable = isAvailable
+    self.availabilityDescription = availabilityDescription
+    self.contextSize = contextSize
+    self.supportsVision = supportsVision
+    self.supportsGuidedGeneration = supportsGuidedGeneration
+    self.supportsReasoning = supportsReasoning
+    self.supportsToolCalling = supportsToolCalling
+    self.privateCloudComputeQuota = privateCloudComputeQuota
+    self.supportsCurrentLocale = supportsCurrentLocale
+  }
+}
+
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
+public struct PrivateCloudComputeQuotaSnapshot: Codable, Equatable, Sendable {
+  public var statusDescription: String
+  public var isLimitReached: Bool
+  public var isApproachingLimit: Bool?
+  public var resetDate: Date?
+  public var hasLimitIncreaseSuggestion: Bool
+
+  public init(
+    statusDescription: String,
+    isLimitReached: Bool,
+    isApproachingLimit: Bool?,
+    resetDate: Date?,
+    hasLimitIncreaseSuggestion: Bool
+  ) {
+    self.statusDescription = statusDescription
+    self.isLimitReached = isLimitReached
+    self.isApproachingLimit = isApproachingLimit
+    self.resetDate = resetDate
+    self.hasLimitIncreaseSuggestion = hasLimitIncreaseSuggestion
+  }
+}
+
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
 public enum FoundationModelRuntime: Sendable {
   case system(SystemLanguageModel)
   case privateCloudCompute(PrivateCloudComputeLanguageModel)
@@ -48,12 +145,79 @@ public enum FoundationModelRuntime: Sendable {
     .system(.default)
   }
 
+  public var kind: FoundationModelRuntimeKind {
+    switch self {
+    case .system:
+      .system
+    case .privateCloudCompute:
+      .privateCloudCompute
+    }
+  }
+
+  public var isAvailable: Bool {
+    switch self {
+    case .system(let model):
+      model.isAvailable
+    case .privateCloudCompute(let model):
+      model.isAvailable
+    }
+  }
+
+  public var availabilityDescription: String {
+    switch self {
+    case .system(let model):
+      String(describing: model.availability)
+    case .privateCloudCompute(let model):
+      String(describing: model.availability)
+    }
+  }
+
   public func contextSize() async throws -> Int {
     switch self {
     case .system(let model):
       model.contextSize
     case .privateCloudCompute(let model):
       try await model.contextSize
+    }
+  }
+
+  public func snapshot() async -> FoundationModelRuntimeSnapshot {
+    let resolvedContextSize = try? await contextSize()
+    let runtimeCapabilities = capabilities
+    switch self {
+    case .system:
+      return FoundationModelRuntimeSnapshot(
+        kind: kind,
+        isAvailable: isAvailable,
+        availabilityDescription: availabilityDescription,
+        contextSize: resolvedContextSize,
+        supportsVision: runtimeCapabilities.contains(.vision),
+        supportsGuidedGeneration: runtimeCapabilities.contains(.guidedGeneration),
+        supportsReasoning: runtimeCapabilities.contains(.reasoning),
+        supportsToolCalling: runtimeCapabilities.contains(.toolCalling)
+      )
+    case .privateCloudCompute(let model):
+      return FoundationModelRuntimeSnapshot(
+        kind: kind,
+        isAvailable: isAvailable,
+        availabilityDescription: availabilityDescription,
+        contextSize: resolvedContextSize,
+        supportsVision: runtimeCapabilities.contains(.vision),
+        supportsGuidedGeneration: runtimeCapabilities.contains(.guidedGeneration),
+        supportsReasoning: runtimeCapabilities.contains(.reasoning),
+        supportsToolCalling: runtimeCapabilities.contains(.toolCalling),
+        privateCloudComputeQuota: PrivateCloudComputeQuotaSnapshot(quotaUsage: model.quotaUsage),
+        supportsCurrentLocale: model.supportsLocale()
+      )
+    }
+  }
+
+  private var capabilities: LanguageModelCapabilities {
+    switch self {
+    case .system(let model):
+      model.capabilities
+    case .privateCloudCompute(let model):
+      model.capabilities
     }
   }
 
@@ -106,6 +270,15 @@ public enum FoundationModelRuntime: Sendable {
     }
   }
 
+  func tokenCount(for prompt: Prompt) async throws -> Int? {
+    switch self {
+    case .system(let model):
+      try await model.tokenCount(for: prompt)
+    case .privateCloudCompute:
+      nil
+    }
+  }
+
   func tokenCount(for tools: [any FoundationModels.Tool]) async throws -> Int? {
     guard !tools.isEmpty else {
       return nil
@@ -122,6 +295,33 @@ public enum FoundationModelRuntime: Sendable {
 
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
+private extension PrivateCloudComputeQuotaSnapshot {
+  init(quotaUsage: PrivateCloudComputeLanguageModel.QuotaUsage) {
+    let statusDescription: String
+    let isApproachingLimit: Bool?
+    switch quotaUsage.status {
+    case .belowLimit(let belowLimit):
+      statusDescription = belowLimit.isApproachingLimit ? "belowLimitApproaching" : "belowLimit"
+      isApproachingLimit = belowLimit.isApproachingLimit
+    case .limitReached:
+      statusDescription = "limitReached"
+      isApproachingLimit = nil
+    @unknown default:
+      statusDescription = String(describing: quotaUsage.status)
+      isApproachingLimit = nil
+    }
+    self.init(
+      statusDescription: statusDescription,
+      isLimitReached: quotaUsage.isLimitReached,
+      isApproachingLimit: isApproachingLimit,
+      resetDate: quotaUsage.resetDate,
+      hasLimitIncreaseSuggestion: quotaUsage.limitIncreaseSuggestion != nil
+    )
+  }
+}
+
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
 public struct FoundationModelProvider: StreamingModelProvider {
   public var runtime: FoundationModelRuntime
   public var instructions: String?
@@ -131,6 +331,10 @@ public struct FoundationModelProvider: StreamingModelProvider {
 
   public func contextSize() async throws -> Int {
     try await runtime.contextSize()
+  }
+
+  public func runtimeSnapshot() async -> FoundationModelRuntimeSnapshot {
+    await runtime.snapshot()
   }
 
   public init(
@@ -161,6 +365,22 @@ public struct FoundationModelProvider: StreamingModelProvider {
     self.options = options
     self.contextOptions = contextOptions
     self.toolExecutionPolicy = toolExecutionPolicy
+  }
+
+  public init(
+    selection: FoundationModelRuntimeSelection,
+    instructions: String? = nil,
+    options: GenerationOptions = GenerationOptions(),
+    contextOptions: ContextOptions = ContextOptions(),
+    toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy()
+  ) {
+    self.init(
+      runtime: selection.resolve(),
+      instructions: instructions,
+      options: options,
+      contextOptions: contextOptions,
+      toolExecutionPolicy: toolExecutionPolicy
+    )
   }
 
   public func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
@@ -199,6 +419,10 @@ public struct FoundationModelProvider: StreamingModelProvider {
         toolDefinitionTokens: toolDefinitionTokens
       )
     )
+  }
+
+  public func generate(prompt: Prompt, tools: [any CoreAgent.Tool] = []) async throws -> ModelOutput {
+    try await generate(prompt: prompt, toolTaskDescription: "[prompt]", tools: tools)
   }
 
   public func stream(
@@ -252,6 +476,19 @@ public struct FoundationModelProvider: StreamingModelProvider {
     )
   }
 
+  public func stream(
+    prompt: Prompt,
+    tools: [any CoreAgent.Tool] = [],
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> ModelOutput {
+    try await stream(
+      prompt: prompt,
+      toolTaskDescription: "[prompt]",
+      tools: tools,
+      onPartialResponse: onPartialResponse
+    )
+  }
+
   public func generateStructuredContent(
     prompt: String,
     schemaName: String,
@@ -288,8 +525,104 @@ public struct FoundationModelProvider: StreamingModelProvider {
     try await runtime.tokenCount(for: prompt)
   }
 
+  private func tokenCount(for prompt: Prompt) async throws -> Int? {
+    try await runtime.tokenCount(for: prompt)
+  }
+
   private func tokenCount(for tools: [any FoundationModels.Tool]) async throws -> Int? {
     try await runtime.tokenCount(for: tools)
+  }
+
+  private func generate(
+    prompt: Prompt,
+    toolTaskDescription: String,
+    tools: [any CoreAgent.Tool]
+  ) async throws -> ModelOutput {
+    try validateAvailability()
+
+    let audit = FoundationModelToolAudit()
+    let foundationTools = try tools.map {
+      try FoundationModelToolAdapter(
+        tool: $0,
+        toolExecutionPolicy: toolExecutionPolicy,
+        task: toolTaskDescription,
+        audit: audit
+      )
+    }
+    let session = runtime.makeSession(
+      tools: foundationTools,
+      instructions: instructions
+    )
+
+    let inputTokens = try await tokenCount(for: prompt)
+    let toolDefinitionTokens = try await tokenCount(for: foundationTools)
+    let response: LanguageModelSession.Response<String>
+    do {
+      response = try await session.respond(to: prompt, options: options, contextOptions: contextOptions)
+    } catch {
+      try await throwToolExecutionErrorIfNeeded(error, audit: audit, session: session, tools: tools)
+      throw error
+    }
+    return .finalAnswer(
+      response.content,
+      events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
+      usage: AgentUsage(
+        inputTokens: inputTokens,
+        outputTokens: try await tokenCount(for: response.content),
+        toolDefinitionTokens: toolDefinitionTokens
+      )
+    )
+  }
+
+  private func stream(
+    prompt: Prompt,
+    toolTaskDescription: String,
+    tools: [any CoreAgent.Tool],
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> ModelOutput {
+    try validateAvailability()
+
+    let audit = FoundationModelToolAudit()
+    let foundationTools = try tools.map {
+      try FoundationModelToolAdapter(
+        tool: $0,
+        toolExecutionPolicy: toolExecutionPolicy,
+        task: toolTaskDescription,
+        audit: audit
+      )
+    }
+    let session = runtime.makeSession(
+      tools: foundationTools,
+      instructions: instructions
+    )
+
+    let inputTokens = try await tokenCount(for: prompt)
+    let toolDefinitionTokens = try await tokenCount(for: foundationTools)
+    var finalContent = ""
+
+    do {
+      for try await partialResponse in session.streamResponse(
+        to: prompt,
+        options: options,
+        contextOptions: contextOptions
+      ) {
+        finalContent = partialResponse.content
+        await onPartialResponse(partialResponse.content)
+      }
+    } catch {
+      try await throwToolExecutionErrorIfNeeded(error, audit: audit, session: session, tools: tools)
+      throw error
+    }
+
+    return .finalAnswer(
+      finalContent,
+      events: try await audit.events() + FoundationModelTranscriptEvents.makeEvents(from: session.transcript, tools: tools),
+      usage: AgentUsage(
+        inputTokens: inputTokens,
+        outputTokens: try await tokenCount(for: finalContent),
+        toolDefinitionTokens: toolDefinitionTokens
+      )
+    )
   }
 
   private func throwToolExecutionErrorIfNeeded(

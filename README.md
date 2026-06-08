@@ -102,17 +102,24 @@ Each tool can publish a `ToolManifest` containing its name, description, inputs,
 
 - `FoundationModelProvider` implements `ModelProvider` and `StreamingModelProvider`.
 - `FoundationModelRuntime` selects either `SystemLanguageModel` or `PrivateCloudComputeLanguageModel`.
+- `FoundationModelRuntimeSelection` can force on-device, force Private Cloud Compute, or prefer PCC with on-device fallback.
+- `FoundationModelRuntimeSnapshot` reports availability, context size, capabilities, locale support, and PCC quota state.
 - `FoundationModelToolAdapter` bridges CoreAgent tools into Foundation Models tools.
 - `FoundationModelSchemaAdapter` converts `ToolInput` trees into Foundation Models schemas.
 - `FoundationModelToolAudit` records Foundation Models-native tool authorization events.
 - `ContextOptions` can be passed through for OS 27 reasoning levels and schema prompting.
 
-Use Private Cloud Compute explicitly when your app has the required entitlement:
+Use Private Cloud Compute explicitly when your app has the required entitlement, or prefer it with an on-device fallback:
 
 ```swift
 let provider = FoundationModelProvider(
   runtime: .privateCloudCompute(PrivateCloudComputeLanguageModel()),
   contextOptions: ContextOptions(reasoningLevel: .deep)
+)
+
+let fallbackProvider = FoundationModelProvider(
+  selection: .preferPrivateCloudCompute(),
+  contextOptions: ContextOptions(reasoningLevel: .moderate)
 )
 ```
 
@@ -120,8 +127,32 @@ Tune tool use with OS 27's Foundation Models generation options:
 
 ```swift
 let provider = FoundationModelProvider(
-  options: GenerationOptions(toolCallingMode: .required)
+  options: GenerationOptions(
+    temperature: 0.7,
+    maximumResponseTokens: 512,
+    toolCallingMode: .required
+  )
 )
+```
+
+Inspect the active runtime before a run:
+
+```swift
+let snapshot = await provider.runtimeSnapshot()
+print(snapshot.kind)
+print(snapshot.supportsReasoning)
+print(snapshot.privateCloudComputeQuota?.statusDescription)
+```
+
+Pass Foundation Models prompts directly when you need OS 27 prompt-builder features such as image attachments:
+
+```swift
+let imagePrompt = Prompt {
+  Attachment(image).label("reference")
+  "Describe the craft project in this reference image."
+}
+
+let output = try await provider.generate(prompt: imagePrompt)
 ```
 
 Structured generation is available directly from the provider:
@@ -176,8 +207,19 @@ Bound long runs and tool-heavy workflows:
 swift run core-agent --model-timeout-seconds 30 "Answer with a bounded model call."
 swift run core-agent --run-timeout-seconds 60 "Answer within a bounded run."
 swift run core-agent --max-model-input-chars 12000 "Summarize this request."
+swift run core-agent --max-response-tokens 512 "Keep the answer short."
 swift run core-agent --max-tool-output-chars 4000 --demo-tools "Search files and summarize the matches."
 swift run core-agent --max-context-messages 12 --max-memory-messages 40 --demo-tools "Answer with bounded context."
+```
+
+Try OS 27 Foundation Models controls:
+
+```bash
+swift run core-agent --print-model-info
+swift run core-agent --pcc --print-model-info
+swift run core-agent --prefer-pcc --reasoning deep "Plan this workflow."
+swift run core-agent --tool-calling required --demo-tools "Use calculate for 12 * 9."
+swift run core-agent --temperature 0.8 --max-response-tokens 256 "Brainstorm five names."
 ```
 
 Use allowlisted local files and hosts:
@@ -193,7 +235,7 @@ swift run core-agent --demo-tools --allow-url-host example.com "Fetch https://ex
 | --- | --- | --- |
 | Agent loop | `ToolCallingAgent`, `ModelProvider`, `StreamingModelProvider` | A bounded run loop that asks the model for tool calls or a final answer. |
 | Tools | `Tool`, `ClosureTool`, `ToolInput`, `ToolManifest` | Swift actions with schemas, descriptions, and stable approval digests. |
-| Foundation Models | `FoundationModelProvider`, `FoundationModelToolAdapter`, `FoundationModelSchemaAdapter` | Apple-native generation, structured content, and tool bridging. |
+| Foundation Models | `FoundationModelProvider`, `FoundationModelRuntime`, `FoundationModelRuntimeSelection`, `FoundationModelRuntimeSnapshot`, `FoundationModelToolAdapter`, `FoundationModelSchemaAdapter` | Apple-native generation, PCC selection, runtime inspection, structured content, and tool bridging. |
 | Governance | `ToolExecutionPolicy`, `TrustedToolExecutionPolicy`, `ApprovalRequiredToolExecutionPolicy`, `CompositeToolExecutionPolicy` | Authorization before tool execution. |
 | Memory | `AgentMemory`, `FileAgentMemoryStore`, `ConversationCompactor`, `AgentMemorySummary`, `ModelConversationCompactor` | Persisted conversation state with structured compaction. |
 | Context | `AgentContextProvider`, `StaticAgentContextProvider`, `AgentContextProviderManifest`, `TrustedAgentContextProviderExecutionPolicy` | Trusted pre-generation context without writing it into run memory. |

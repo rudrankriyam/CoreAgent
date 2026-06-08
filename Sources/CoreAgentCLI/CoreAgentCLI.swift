@@ -1,4 +1,5 @@
 import Foundation
+import FoundationModels
 import CoreAgent
 import CoreAgentFoundationModels
 import CoreAgentTools
@@ -23,6 +24,9 @@ struct CoreAgentCLI {
       let enablesStructuredDemo = arguments.removeAll("--structured-demo")
       let enablesParallelTools = arguments.removeAll("--parallel-tools")
       let enablesActionOnly = arguments.removeAll("--action-only")
+      let usesPrivateCloudCompute = arguments.removeAll("--pcc")
+      let prefersPrivateCloudCompute = arguments.removeAll("--prefer-pcc")
+      let printsModelInfo = arguments.removeAll("--print-model-info")
       let failsOnToolArgumentError = arguments.removeAll("--fail-on-tool-argument-error")
       let failsOnFinalAnswerRejection = arguments.removeAll("--fail-on-final-answer-rejection")
       let disablesRedaction = arguments.removeAll("--no-redaction")
@@ -34,6 +38,10 @@ struct CoreAgentCLI {
       let maximumToolOutputCharacters = arguments.removeOptionValue("--max-tool-output-chars").flatMap(Int.init)
       let maximumContextMessages = arguments.removeOptionValue("--max-context-messages").flatMap(Int.init)
       let maximumMemoryMessages = arguments.removeOptionValue("--max-memory-messages").flatMap(Int.init)
+      let maximumResponseTokens = arguments.removeOptionValue("--max-response-tokens").flatMap(Int.init)
+      let temperature = arguments.removeOptionValue("--temperature").flatMap(Double.init)
+      let reasoningLevel = arguments.removeOptionValue("--reasoning").map(parseReasoningLevel)
+      let toolCallingMode = arguments.removeOptionValue("--tool-calling").map(parseToolCallingMode)
       let modelTimeoutSeconds = arguments.removeOptionValue("--model-timeout-seconds").flatMap(Double.init)
       let runTimeoutSeconds = arguments.removeOptionValue("--run-timeout-seconds").flatMap(Double.init)
       let allowedFileDirectories = arguments.removeOptionValues("--allow-file-dir")
@@ -101,9 +109,28 @@ struct CoreAgentCLI {
         return
       }
 
+      let runtimeSelection: FoundationModelRuntimeSelection = if usesPrivateCloudCompute {
+        .privateCloudCompute()
+      } else if prefersPrivateCloudCompute {
+        .preferPrivateCloudCompute()
+      } else {
+        .system()
+      }
       let provider = FoundationModelProvider(
-        instructions: "Answer clearly and concisely. You are running inside CoreAgent."
+        selection: runtimeSelection,
+        instructions: "Answer clearly and concisely. You are running inside CoreAgent.",
+        options: GenerationOptions(
+          samplingMode: nil,
+          temperature: temperature,
+          maximumResponseTokens: maximumResponseTokens,
+          toolCallingMode: toolCallingMode ?? (enablesActionOnly ? .required : nil)
+        ),
+        contextOptions: ContextOptions(reasoningLevel: reasoningLevel)
       )
+      if printsModelInfo {
+        try await printModelInfo(provider)
+        return
+      }
       if enablesStructuredDemo {
         let output = try await provider.generateStructuredContent(
           prompt: prompt,
@@ -194,6 +221,12 @@ struct CoreAgentCLI {
     print("       core-agent --stream <prompt>")
     print("       core-agent --parallel-tools --demo-tools <prompt>")
     print("       core-agent --action-only --demo-tools <prompt>")
+    print("       core-agent --pcc <prompt>")
+    print("       core-agent --prefer-pcc <prompt>")
+    print("       core-agent --print-model-info")
+    print("       core-agent --reasoning deep <prompt>")
+    print("       core-agent --tool-calling required --demo-tools <prompt>")
+    print("       core-agent --temperature 0.8 --max-response-tokens 512 <prompt>")
     print("       core-agent --fail-on-tool-argument-error --demo-tools <prompt>")
     print("       core-agent --fail-on-final-answer-rejection --demo-tools <prompt>")
     print("       core-agent --trace /tmp/core-agent-trace.json <prompt>")
@@ -214,13 +247,49 @@ struct CoreAgentCLI {
     print("Example: core-agent Summarize tool calling in one sentence")
   }
 
+  private static func parseReasoningLevel(_ value: String) -> ContextOptions.ReasoningLevel {
+    switch value.lowercased() {
+    case "light":
+      .light
+    case "moderate":
+      .moderate
+    case "deep":
+      .deep
+    default:
+      .custom(value)
+    }
+  }
+
+  private static func parseToolCallingMode(_ value: String) -> GenerationOptions.ToolCallingMode {
+    switch value.lowercased() {
+    case "required":
+      .required
+    case "disallowed":
+      .disallowed
+    default:
+      .allowed
+    }
+  }
+
+  private static func printModelInfo(_ provider: FoundationModelProvider) async throws {
+    let snapshot = await provider.runtimeSnapshot()
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    if let resetDate = snapshot.privateCloudComputeQuota?.resetDate {
+      encoder.dateEncodingStrategy = .iso8601
+      _ = resetDate
+    }
+    let data = try encoder.encode(snapshot)
+    print(String(decoding: data, as: UTF8.self))
+  }
+
   private static func makeTools(
     enablesDemoTools: Bool,
     enablesActionOnly: Bool,
     allowedFileDirectories: [String],
     allowedURLHosts: [String]
-  ) -> [any Tool] {
-    var tools: [any Tool] = enablesDemoTools
+  ) -> [any CoreAgent.Tool] {
+    var tools: [any CoreAgent.Tool] = enablesDemoTools
       ? DemoTools.makeTools(allowedFileDirectories: allowedFileDirectories)
       : []
     if !allowedURLHosts.isEmpty {
@@ -232,7 +301,7 @@ struct CoreAgentCLI {
     return tools
   }
 
-  private static func printToolManifests(for tools: [any Tool], redactionPolicy: AgentRedactionPolicy) throws {
+  private static func printToolManifests(for tools: [any CoreAgent.Tool], redactionPolicy: AgentRedactionPolicy) throws {
     let manifests = try tools.map { try ToolManifest(tool: $0).redacted(using: redactionPolicy) }
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -283,7 +352,7 @@ struct CoreAgentCLI {
   }
 
   private static func printAgentConfiguration(
-    tools: [any Tool],
+    tools: [any CoreAgent.Tool],
     maximumModelInputCharacters: Int?,
     maximumToolOutputCharacters: Int?,
     maximumContextMessages: Int?,
@@ -320,7 +389,7 @@ struct CoreAgentCLI {
   }
 
   private static func printAgentDiscovery(
-    tools: [any Tool],
+    tools: [any CoreAgent.Tool],
     maximumModelInputCharacters: Int?,
     maximumToolOutputCharacters: Int?,
     maximumContextMessages: Int?,
@@ -371,8 +440,8 @@ struct CoreAgentCLI {
 }
 
 private enum DemoTools {
-  static func makeTools(allowedFileDirectories: [String]) -> [any Tool] {
-    var tools: [any Tool] = [
+  static func makeTools(allowedFileDirectories: [String]) -> [any CoreAgent.Tool] {
+    var tools: [any CoreAgent.Tool] = [
       CurrentTimeTool(),
       MathTool()
     ]
