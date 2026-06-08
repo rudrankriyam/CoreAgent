@@ -295,6 +295,22 @@ public enum FoundationModelRuntime: Sendable {
 
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
+private actor FoundationModelRuntimePin {
+  private var resolvedRuntime: FoundationModelRuntime?
+
+  func activeRuntime(for selection: FoundationModelRuntimeSelection) -> FoundationModelRuntime {
+    if let resolvedRuntime {
+      return resolvedRuntime
+    }
+
+    let resolvedRuntime = selection.resolve()
+    self.resolvedRuntime = resolvedRuntime
+    return resolvedRuntime
+  }
+}
+
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
 private extension PrivateCloudComputeQuotaSnapshot {
   init(quotaUsage: PrivateCloudComputeLanguageModel.QuotaUsage) {
     let statusDescription: String
@@ -326,9 +342,11 @@ public struct FoundationModelProvider: StreamingModelProvider {
   public var runtime: FoundationModelRuntime {
     didSet {
       runtimeSelection = nil
+      runtimePin = nil
     }
   }
   public private(set) var runtimeSelection: FoundationModelRuntimeSelection?
+  private var runtimePin: FoundationModelRuntimePin?
   public var instructions: String?
   public var options: GenerationOptions
   public var contextOptions: ContextOptions
@@ -367,6 +385,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
   ) {
     self.runtime = runtime
     self.runtimeSelection = nil
+    self.runtimePin = nil
     self.instructions = instructions
     self.options = options
     self.contextOptions = contextOptions
@@ -388,10 +407,11 @@ public struct FoundationModelProvider: StreamingModelProvider {
       toolExecutionPolicy: toolExecutionPolicy
     )
     self.runtimeSelection = selection
+    self.runtimePin = FoundationModelRuntimePin()
   }
 
   public func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
-    let runtime = activeRuntime()
+    let runtime = await activeRuntime()
     try runtime.validateAvailability()
 
     let audit = FoundationModelToolAudit()
@@ -446,7 +466,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     tools: [any CoreAgent.Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
-    let runtime = activeRuntime()
+    let runtime = await activeRuntime()
     try runtime.validateAvailability()
 
     let audit = FoundationModelToolAudit()
@@ -514,7 +534,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     properties: [String: ToolInput],
     includeSchemaInPrompt: Bool? = nil
   ) async throws -> String {
-    let runtime = activeRuntime()
+    let runtime = await activeRuntime()
     try runtime.validateAvailability()
 
     let root = try FoundationModelSchemaAdapter.makeObjectSchema(
@@ -537,8 +557,16 @@ public struct FoundationModelProvider: StreamingModelProvider {
     return response.content.jsonString
   }
 
-  private func activeRuntime() -> FoundationModelRuntime {
-    runtimeSelection?.resolve() ?? runtime
+  private func activeRuntime() async -> FoundationModelRuntime {
+    guard let runtimeSelection else {
+      return runtime
+    }
+
+    guard let runtimePin else {
+      return runtimeSelection.resolve()
+    }
+
+    return await runtimePin.activeRuntime(for: runtimeSelection)
   }
 
   private func generate(
@@ -546,7 +574,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     toolTaskDescription: String,
     tools: [any CoreAgent.Tool]
   ) async throws -> ModelOutput {
-    let runtime = activeRuntime()
+    let runtime = await activeRuntime()
     try runtime.validateAvailability()
 
     let audit = FoundationModelToolAudit()
@@ -589,7 +617,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     tools: [any CoreAgent.Tool],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
-    let runtime = activeRuntime()
+    let runtime = await activeRuntime()
     try runtime.validateAvailability()
 
     let audit = FoundationModelToolAudit()
