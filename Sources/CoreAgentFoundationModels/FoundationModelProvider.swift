@@ -323,18 +323,23 @@ private extension PrivateCloudComputeQuotaSnapshot {
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
 public struct FoundationModelProvider: StreamingModelProvider {
-  public var runtime: FoundationModelRuntime
+  public var runtime: FoundationModelRuntime {
+    didSet {
+      runtimeSelection = nil
+    }
+  }
+  public private(set) var runtimeSelection: FoundationModelRuntimeSelection?
   public var instructions: String?
   public var options: GenerationOptions
   public var contextOptions: ContextOptions
   public var toolExecutionPolicy: any ToolExecutionPolicy
 
   public func contextSize() async throws -> Int {
-    try await runtime.contextSize()
+    try await activeRuntime().contextSize()
   }
 
   public func runtimeSnapshot() async -> FoundationModelRuntimeSnapshot {
-    await runtime.snapshot()
+    await activeRuntime().snapshot()
   }
 
   public init(
@@ -361,6 +366,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy()
   ) {
     self.runtime = runtime
+    self.runtimeSelection = nil
     self.instructions = instructions
     self.options = options
     self.contextOptions = contextOptions
@@ -381,6 +387,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
       contextOptions: contextOptions,
       toolExecutionPolicy: toolExecutionPolicy
     )
+    self.runtimeSelection = selection
   }
 
   public func generate(messages: [AgentMessage], tools: [any CoreAgent.Tool]) async throws -> ModelOutput {
@@ -396,7 +403,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = runtime.makeSession(
+    let session = activeRuntime().makeSession(
       tools: foundationTools,
       instructions: instructions
     )
@@ -421,8 +428,16 @@ public struct FoundationModelProvider: StreamingModelProvider {
     )
   }
 
-  public func generate(prompt: Prompt, tools: [any CoreAgent.Tool] = []) async throws -> ModelOutput {
-    try await generate(prompt: prompt, toolTaskDescription: "[prompt]", tools: tools)
+  public func generate(
+    prompt: Prompt,
+    taskDescription: String? = nil,
+    tools: [any CoreAgent.Tool] = []
+  ) async throws -> ModelOutput {
+    try await generate(
+      prompt: prompt,
+      toolTaskDescription: taskDescription ?? String(describing: prompt),
+      tools: tools
+    )
   }
 
   public func stream(
@@ -442,7 +457,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = runtime.makeSession(
+    let session = activeRuntime().makeSession(
       tools: foundationTools,
       instructions: instructions
     )
@@ -478,12 +493,13 @@ public struct FoundationModelProvider: StreamingModelProvider {
 
   public func stream(
     prompt: Prompt,
+    taskDescription: String? = nil,
     tools: [any CoreAgent.Tool] = [],
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> ModelOutput {
     try await stream(
       prompt: prompt,
-      toolTaskDescription: "[prompt]",
+      toolTaskDescription: taskDescription ?? String(describing: prompt),
       tools: tools,
       onPartialResponse: onPartialResponse
     )
@@ -504,7 +520,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
       properties: properties
     )
     let schema = try GenerationSchema(root: root, dependencies: [])
-    let session = runtime.makeSession(instructions: instructions)
+    let session = activeRuntime().makeSession(instructions: instructions)
     let structuredContextOptions = ContextOptions(
       includeSchemaInPrompt: includeSchemaInPrompt ?? contextOptions.includeSchemaInPrompt ?? true,
       reasoningLevel: contextOptions.reasoningLevel
@@ -519,19 +535,23 @@ public struct FoundationModelProvider: StreamingModelProvider {
   }
 
   private func validateAvailability() throws {
-    try runtime.validateAvailability()
+    try activeRuntime().validateAvailability()
   }
 
   private func tokenCount(for prompt: String) async throws -> Int? {
-    try await runtime.tokenCount(for: prompt)
+    try await activeRuntime().tokenCount(for: prompt)
   }
 
   private func tokenCount(for prompt: Prompt) async throws -> Int? {
-    try await runtime.tokenCount(for: prompt)
+    try await activeRuntime().tokenCount(for: prompt)
   }
 
   private func tokenCount(for tools: [any FoundationModels.Tool]) async throws -> Int? {
-    try await runtime.tokenCount(for: tools)
+    try await activeRuntime().tokenCount(for: tools)
+  }
+
+  private func activeRuntime() -> FoundationModelRuntime {
+    runtimeSelection?.resolve() ?? runtime
   }
 
   private func generate(
@@ -550,7 +570,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = runtime.makeSession(
+    let session = activeRuntime().makeSession(
       tools: foundationTools,
       instructions: instructions
     )
@@ -592,7 +612,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = runtime.makeSession(
+    let session = activeRuntime().makeSession(
       tools: foundationTools,
       instructions: instructions
     )
@@ -651,13 +671,23 @@ public struct FoundationModelProvider: StreamingModelProvider {
 @available(watchOS, unavailable)
 extension FoundationModelProvider: ToolExecutionPolicyConfigurableModelProvider {
   public func withToolExecutionPolicy(_ policy: any ToolExecutionPolicy) -> any ModelProvider {
-    FoundationModelProvider(
-      runtime: runtime,
-      instructions: instructions,
-      options: options,
-      contextOptions: contextOptions,
-      toolExecutionPolicy: policy
-    )
+    if let runtimeSelection {
+      return FoundationModelProvider(
+        selection: runtimeSelection,
+        instructions: instructions,
+        options: options,
+        contextOptions: contextOptions,
+        toolExecutionPolicy: policy
+      )
+    } else {
+      return FoundationModelProvider(
+        runtime: runtime,
+        instructions: instructions,
+        options: options,
+        contextOptions: contextOptions,
+        toolExecutionPolicy: policy
+      )
+    }
   }
 }
 
