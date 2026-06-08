@@ -8,7 +8,7 @@ It is built around Apple Foundation Models today and designed to grow with the b
 
 ## Why CoreAgent
 
-- **Foundation Models first:** built for Apple's Foundation Models framework on iOS, macOS, and visionOS 26.
+- **Foundation Models first:** built for Apple's Foundation Models framework on iOS, macOS, and visionOS 27.
 - **Swift-native tools:** describe callable actions with strong metadata, input schemas, output descriptions, and stable manifests.
 - **App-grade governance:** approve, deny, allowlist, or trust tools before anything runs.
 - **Durable memory:** keep conversation history, compact older messages into structured summaries, and persist runs as JSON.
@@ -17,11 +17,11 @@ It is built around Apple Foundation Models today and designed to grow with the b
 
 ## Requirements
 
-- Swift 6.2
-- iOS 26.0+
-- macOS 26.0+
-- visionOS 26.0+
-- Xcode 26 SDKs with `FoundationModels`
+- Swift 6.4
+- iOS 27.0+
+- macOS 27.0+
+- visionOS 27.0+
+- Xcode 27 SDKs with `FoundationModels`
 
 ## Installation
 
@@ -98,12 +98,62 @@ Each tool can publish a `ToolManifest` containing its name, description, inputs,
 
 ## Foundation Models
 
-`CoreAgentFoundationModels` provides the Apple-native backend:
+`CoreAgentFoundationModels` provides the OS 27 Foundation Models backend:
 
 - `FoundationModelProvider` implements `ModelProvider` and `StreamingModelProvider`.
+- `FoundationModelRuntime` selects either `SystemLanguageModel` or `PrivateCloudComputeLanguageModel`.
+- `FoundationModelRuntimeSelection` chooses on-device generation, Private Cloud Compute, or PCC when it is available.
+- `FoundationModelRuntimeSnapshot` reports availability, context size, capabilities, locale support, and PCC quota state.
 - `FoundationModelToolAdapter` bridges CoreAgent tools into Foundation Models tools.
 - `FoundationModelSchemaAdapter` converts `ToolInput` trees into Foundation Models schemas.
 - `FoundationModelToolAudit` records Foundation Models-native tool authorization events.
+- `ContextOptions` can be passed through for OS 27 reasoning levels and schema prompting.
+
+Use Private Cloud Compute when your app has the required entitlement, or let CoreAgent choose PCC when it is available:
+
+```swift
+let provider = FoundationModelProvider(
+  runtime: .privateCloudCompute(PrivateCloudComputeLanguageModel()),
+  contextOptions: ContextOptions(reasoningLevel: .deep)
+)
+
+let adaptiveProvider = FoundationModelProvider(
+  selection: .preferPrivateCloudCompute(),
+  contextOptions: ContextOptions(reasoningLevel: .moderate)
+)
+```
+
+Tune tool use with OS 27's Foundation Models generation options:
+
+```swift
+let provider = FoundationModelProvider(
+  options: GenerationOptions(
+    temperature: 0.7,
+    maximumResponseTokens: 512,
+    toolCallingMode: .required
+  )
+)
+```
+
+Inspect the active runtime before a run:
+
+```swift
+let snapshot = await provider.runtimeSnapshot()
+print(snapshot.kind)
+print(snapshot.supportsReasoning)
+print(snapshot.privateCloudComputeQuota?.statusDescription)
+```
+
+Pass Foundation Models prompts directly when you need OS 27 prompt-builder features such as image attachments:
+
+```swift
+let imagePrompt = Prompt {
+  Attachment(image).label("reference")
+  "Describe the craft project in this reference image."
+}
+
+let output = try await provider.generate(prompt: imagePrompt)
+```
 
 Structured generation is available directly from the provider:
 
@@ -157,8 +207,19 @@ Bound long runs and tool-heavy workflows:
 swift run core-agent --model-timeout-seconds 30 "Answer with a bounded model call."
 swift run core-agent --run-timeout-seconds 60 "Answer within a bounded run."
 swift run core-agent --max-model-input-chars 12000 "Summarize this request."
+swift run core-agent --max-response-tokens 512 "Keep the answer short."
 swift run core-agent --max-tool-output-chars 4000 --demo-tools "Search files and summarize the matches."
 swift run core-agent --max-context-messages 12 --max-memory-messages 40 --demo-tools "Answer with bounded context."
+```
+
+Try OS 27 Foundation Models controls:
+
+```bash
+swift run core-agent --print-model-info
+swift run core-agent --pcc --print-model-info
+swift run core-agent --prefer-pcc --reasoning deep "Plan this workflow."
+swift run core-agent --tool-calling required --demo-tools "Use calculate for 12 * 9."
+swift run core-agent --temperature 0.8 --max-response-tokens 256 "Brainstorm five names."
 ```
 
 Use allowlisted local files and hosts:
@@ -174,7 +235,7 @@ swift run core-agent --demo-tools --allow-url-host example.com "Fetch https://ex
 | --- | --- | --- |
 | Agent loop | `ToolCallingAgent`, `ModelProvider`, `StreamingModelProvider` | A bounded run loop that asks the model for tool calls or a final answer. |
 | Tools | `Tool`, `ClosureTool`, `ToolInput`, `ToolManifest` | Swift actions with schemas, descriptions, and stable approval digests. |
-| Foundation Models | `FoundationModelProvider`, `FoundationModelToolAdapter`, `FoundationModelSchemaAdapter` | Apple-native generation, structured content, and tool bridging. |
+| Foundation Models | `FoundationModelProvider`, `FoundationModelRuntime`, `FoundationModelRuntimeSelection`, `FoundationModelRuntimeSnapshot`, `FoundationModelToolAdapter`, `FoundationModelSchemaAdapter` | OS 27 generation, PCC selection, runtime inspection, structured content, and tool bridging. |
 | Governance | `ToolExecutionPolicy`, `TrustedToolExecutionPolicy`, `ApprovalRequiredToolExecutionPolicy`, `CompositeToolExecutionPolicy` | Authorization before tool execution. |
 | Memory | `AgentMemory`, `FileAgentMemoryStore`, `ConversationCompactor`, `AgentMemorySummary`, `ModelConversationCompactor` | Persisted conversation state with structured compaction. |
 | Context | `AgentContextProvider`, `StaticAgentContextProvider`, `AgentContextProviderManifest`, `TrustedAgentContextProviderExecutionPolicy` | Trusted pre-generation context without writing it into run memory. |
