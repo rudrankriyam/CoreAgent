@@ -494,7 +494,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     schemaName: String,
     schemaDescription: String? = nil,
     properties: [String: ToolInput],
-    includeSchemaInPrompt: Bool = true
+    includeSchemaInPrompt: Bool? = nil
   ) async throws -> String {
     try validateAvailability()
 
@@ -505,14 +505,15 @@ public struct FoundationModelProvider: StreamingModelProvider {
     )
     let schema = try GenerationSchema(root: root, dependencies: [])
     let session = runtime.makeSession(instructions: instructions)
+    let structuredContextOptions = ContextOptions(
+      includeSchemaInPrompt: includeSchemaInPrompt ?? contextOptions.includeSchemaInPrompt ?? true,
+      reasoningLevel: contextOptions.reasoningLevel
+    )
     let response = try await session.respond(
       to: prompt,
       schema: schema,
       options: options,
-      contextOptions: ContextOptions(
-        includeSchemaInPrompt: includeSchemaInPrompt,
-        reasoningLevel: contextOptions.reasoningLevel
-      )
+      contextOptions: structuredContextOptions
     )
     return response.content.jsonString
   }
