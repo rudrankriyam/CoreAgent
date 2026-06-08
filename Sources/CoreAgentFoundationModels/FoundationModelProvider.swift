@@ -40,21 +40,126 @@ public struct FoundationModelToolExecutionError: AgentEventProvidingError, Custo
 
 @available(tvOS, unavailable)
 @available(watchOS, unavailable)
+public enum FoundationModelRuntime: Sendable {
+  case system(SystemLanguageModel)
+  case privateCloudCompute(PrivateCloudComputeLanguageModel)
+
+  public static var `default`: FoundationModelRuntime {
+    .system(.default)
+  }
+
+  public func contextSize() async throws -> Int {
+    switch self {
+    case .system(let model):
+      model.contextSize
+    case .privateCloudCompute(let model):
+      try await model.contextSize
+    }
+  }
+
+  func validateAvailability() throws {
+    switch self {
+    case .system(let model):
+      switch model.availability {
+      case .available:
+        return
+      case .unavailable(let reason):
+        throw FoundationModelProviderError.unavailable(String(describing: reason))
+      }
+    case .privateCloudCompute(let model):
+      switch model.availability {
+      case .available:
+        return
+      case .unavailable(let reason):
+        throw FoundationModelProviderError.unavailable(String(describing: reason))
+      }
+    }
+  }
+
+  func makeSession(
+    tools: [any FoundationModels.Tool],
+    instructions: String?
+  ) -> LanguageModelSession {
+    switch self {
+    case .system(let model):
+      LanguageModelSession(model: model, tools: tools, instructions: instructions)
+    case .privateCloudCompute(let model):
+      LanguageModelSession(model: model, tools: tools, instructions: instructions)
+    }
+  }
+
+  func makeSession(instructions: String?) -> LanguageModelSession {
+    switch self {
+    case .system(let model):
+      LanguageModelSession(model: model, instructions: instructions)
+    case .privateCloudCompute(let model):
+      LanguageModelSession(model: model, instructions: instructions)
+    }
+  }
+
+  func tokenCount(for prompt: String) async throws -> Int? {
+    switch self {
+    case .system(let model):
+      try await model.tokenCount(for: prompt)
+    case .privateCloudCompute:
+      nil
+    }
+  }
+
+  func tokenCount(for tools: [any FoundationModels.Tool]) async throws -> Int? {
+    guard !tools.isEmpty else {
+      return nil
+    }
+
+    switch self {
+    case .system(let model):
+      return try await model.tokenCount(for: tools)
+    case .privateCloudCompute:
+      return nil
+    }
+  }
+}
+
+@available(tvOS, unavailable)
+@available(watchOS, unavailable)
 public struct FoundationModelProvider: StreamingModelProvider {
-  public var model: SystemLanguageModel
+  public var runtime: FoundationModelRuntime
   public var instructions: String?
   public var options: GenerationOptions
+  public var contextOptions: ContextOptions
   public var toolExecutionPolicy: any ToolExecutionPolicy
+
+  public func contextSize() async throws -> Int {
+    try await runtime.contextSize()
+  }
 
   public init(
     model: SystemLanguageModel = .default,
     instructions: String? = nil,
     options: GenerationOptions = GenerationOptions(),
+    contextOptions: ContextOptions = ContextOptions(),
     toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy()
   ) {
-    self.model = model
+    self.init(
+      runtime: .system(model),
+      instructions: instructions,
+      options: options,
+      contextOptions: contextOptions,
+      toolExecutionPolicy: toolExecutionPolicy
+    )
+  }
+
+  public init(
+    runtime: FoundationModelRuntime,
+    instructions: String? = nil,
+    options: GenerationOptions = GenerationOptions(),
+    contextOptions: ContextOptions = ContextOptions(),
+    toolExecutionPolicy: any ToolExecutionPolicy = AllowAllToolExecutionPolicy()
+  ) {
+    self.runtime = runtime
     self.instructions = instructions
     self.options = options
+    self.contextOptions = contextOptions
     self.toolExecutionPolicy = toolExecutionPolicy
   }
 
@@ -71,8 +176,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = LanguageModelSession(
-      model: model,
+    let session = runtime.makeSession(
       tools: foundationTools,
       instructions: instructions
     )
@@ -81,7 +185,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
     let toolDefinitionTokens = try await tokenCount(for: foundationTools)
     let response: LanguageModelSession.Response<String>
     do {
-      response = try await session.respond(to: prompt, options: options)
+      response = try await session.respond(to: prompt, options: options, contextOptions: contextOptions)
     } catch {
       try await throwToolExecutionErrorIfNeeded(error, audit: audit, session: session, tools: tools)
       throw error
@@ -114,8 +218,7 @@ public struct FoundationModelProvider: StreamingModelProvider {
         audit: audit
       )
     }
-    let session = LanguageModelSession(
-      model: model,
+    let session = runtime.makeSession(
       tools: foundationTools,
       instructions: instructions
     )
@@ -125,7 +228,11 @@ public struct FoundationModelProvider: StreamingModelProvider {
     var finalContent = ""
 
     do {
-      for try await partialResponse in session.streamResponse(to: prompt, options: options) {
+      for try await partialResponse in session.streamResponse(
+        to: prompt,
+        options: options,
+        contextOptions: contextOptions
+      ) {
         finalContent = partialResponse.content
         await onPartialResponse(partialResponse.content)
       }
@@ -160,43 +267,29 @@ public struct FoundationModelProvider: StreamingModelProvider {
       properties: properties
     )
     let schema = try GenerationSchema(root: root, dependencies: [])
-    let session = LanguageModelSession(model: model, instructions: instructions)
+    let session = runtime.makeSession(instructions: instructions)
     let response = try await session.respond(
       to: prompt,
       schema: schema,
-      includeSchemaInPrompt: includeSchemaInPrompt,
-      options: options
+      options: options,
+      contextOptions: ContextOptions(
+        includeSchemaInPrompt: includeSchemaInPrompt,
+        reasoningLevel: contextOptions.reasoningLevel
+      )
     )
     return response.content.jsonString
   }
 
   private func validateAvailability() throws {
-    switch model.availability {
-    case .available:
-      return
-    case .unavailable(let reason):
-      throw FoundationModelProviderError.unavailable(String(describing: reason))
-    }
+    try runtime.validateAvailability()
   }
 
   private func tokenCount(for prompt: String) async throws -> Int? {
-    if #available(iOS 26.4, macOS 26.4, visionOS 26.4, *) {
-      return try await model.tokenCount(for: prompt)
-    }
-
-    return nil
+    try await runtime.tokenCount(for: prompt)
   }
 
   private func tokenCount(for tools: [any FoundationModels.Tool]) async throws -> Int? {
-    guard !tools.isEmpty else {
-      return nil
-    }
-
-    if #available(iOS 26.4, macOS 26.4, visionOS 26.4, *) {
-      return try await model.tokenCount(for: tools)
-    }
-
-    return nil
+    try await runtime.tokenCount(for: tools)
   }
 
   private func throwToolExecutionErrorIfNeeded(
@@ -225,9 +318,10 @@ public struct FoundationModelProvider: StreamingModelProvider {
 extension FoundationModelProvider: ToolExecutionPolicyConfigurableModelProvider {
   public func withToolExecutionPolicy(_ policy: any ToolExecutionPolicy) -> any ModelProvider {
     FoundationModelProvider(
-      model: model,
+      runtime: runtime,
       instructions: instructions,
       options: options,
+      contextOptions: contextOptions,
       toolExecutionPolicy: policy
     )
   }
@@ -299,6 +393,10 @@ private extension [Transcript.Segment] {
         text.content
       case .structure(let structure):
         structure.content.jsonString
+      case .attachment:
+        "[attachment]"
+      case .custom(let custom):
+        String(describing: custom)
       @unknown default:
         String(describing: segment)
       }

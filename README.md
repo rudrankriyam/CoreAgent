@@ -8,7 +8,7 @@ It is built around Apple Foundation Models today and designed to grow with the b
 
 ## Why CoreAgent
 
-- **Foundation Models first:** built for Apple's Foundation Models framework on iOS, macOS, and visionOS 26.
+- **Foundation Models first:** built for Apple's Foundation Models framework on iOS, macOS, and visionOS 27.
 - **Swift-native tools:** describe callable actions with strong metadata, input schemas, output descriptions, and stable manifests.
 - **App-grade governance:** approve, deny, allowlist, or trust tools before anything runs.
 - **Durable memory:** keep conversation history, compact older messages into structured summaries, and persist runs as JSON.
@@ -17,11 +17,11 @@ It is built around Apple Foundation Models today and designed to grow with the b
 
 ## Requirements
 
-- Swift 6.2
-- iOS 26.0+
-- macOS 26.0+
-- visionOS 26.0+
-- Xcode 26 SDKs with `FoundationModels`
+- Swift 6.4
+- iOS 27.0+
+- macOS 27.0+
+- visionOS 27.0+
+- Xcode 27 SDKs with `FoundationModels`
 
 ## Installation
 
@@ -101,9 +101,28 @@ Each tool can publish a `ToolManifest` containing its name, description, inputs,
 `CoreAgentFoundationModels` provides the Apple-native backend:
 
 - `FoundationModelProvider` implements `ModelProvider` and `StreamingModelProvider`.
+- `FoundationModelRuntime` selects either `SystemLanguageModel` or `PrivateCloudComputeLanguageModel`.
 - `FoundationModelToolAdapter` bridges CoreAgent tools into Foundation Models tools.
 - `FoundationModelSchemaAdapter` converts `ToolInput` trees into Foundation Models schemas.
 - `FoundationModelToolAudit` records Foundation Models-native tool authorization events.
+- `ContextOptions` can be passed through for OS 27 reasoning levels and schema prompting.
+
+Use Private Cloud Compute explicitly when your app has the required entitlement:
+
+```swift
+let provider = FoundationModelProvider(
+  runtime: .privateCloudCompute(PrivateCloudComputeLanguageModel()),
+  contextOptions: ContextOptions(reasoningLevel: .deep)
+)
+```
+
+Tune tool use with OS 27's Foundation Models generation options:
+
+```swift
+let provider = FoundationModelProvider(
+  options: GenerationOptions(toolCallingMode: .required)
+)
+```
 
 Structured generation is available directly from the provider:
 
