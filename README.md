@@ -98,18 +98,18 @@ Each tool can publish a `ToolManifest` containing its name, description, inputs,
 
 ## Foundation Models
 
-`CoreAgentFoundationModels` provides the Apple-native backend:
+`CoreAgentFoundationModels` provides the OS 27 Foundation Models backend:
 
 - `FoundationModelProvider` implements `ModelProvider` and `StreamingModelProvider`.
 - `FoundationModelRuntime` selects either `SystemLanguageModel` or `PrivateCloudComputeLanguageModel`.
-- `FoundationModelRuntimeSelection` can force on-device, force Private Cloud Compute, or prefer PCC with on-device fallback.
+- `FoundationModelRuntimeSelection` chooses on-device generation, Private Cloud Compute, or PCC when it is available.
 - `FoundationModelRuntimeSnapshot` reports availability, context size, capabilities, locale support, and PCC quota state.
 - `FoundationModelToolAdapter` bridges CoreAgent tools into Foundation Models tools.
 - `FoundationModelSchemaAdapter` converts `ToolInput` trees into Foundation Models schemas.
 - `FoundationModelToolAudit` records Foundation Models-native tool authorization events.
 - `ContextOptions` can be passed through for OS 27 reasoning levels and schema prompting.
 
-Use Private Cloud Compute explicitly when your app has the required entitlement, or prefer it with an on-device fallback:
+Use Private Cloud Compute when your app has the required entitlement, or let CoreAgent choose PCC when it is available:
 
 ```swift
 let provider = FoundationModelProvider(
@@ -117,7 +117,7 @@ let provider = FoundationModelProvider(
   contextOptions: ContextOptions(reasoningLevel: .deep)
 )
 
-let fallbackProvider = FoundationModelProvider(
+let adaptiveProvider = FoundationModelProvider(
   selection: .preferPrivateCloudCompute(),
   contextOptions: ContextOptions(reasoningLevel: .moderate)
 )
@@ -235,7 +235,7 @@ swift run core-agent --demo-tools --allow-url-host example.com "Fetch https://ex
 | --- | --- | --- |
 | Agent loop | `ToolCallingAgent`, `ModelProvider`, `StreamingModelProvider` | A bounded run loop that asks the model for tool calls or a final answer. |
 | Tools | `Tool`, `ClosureTool`, `ToolInput`, `ToolManifest` | Swift actions with schemas, descriptions, and stable approval digests. |
-| Foundation Models | `FoundationModelProvider`, `FoundationModelRuntime`, `FoundationModelRuntimeSelection`, `FoundationModelRuntimeSnapshot`, `FoundationModelToolAdapter`, `FoundationModelSchemaAdapter` | Apple-native generation, PCC selection, runtime inspection, structured content, and tool bridging. |
+| Foundation Models | `FoundationModelProvider`, `FoundationModelRuntime`, `FoundationModelRuntimeSelection`, `FoundationModelRuntimeSnapshot`, `FoundationModelToolAdapter`, `FoundationModelSchemaAdapter` | OS 27 generation, PCC selection, runtime inspection, structured content, and tool bridging. |
 | Governance | `ToolExecutionPolicy`, `TrustedToolExecutionPolicy`, `ApprovalRequiredToolExecutionPolicy`, `CompositeToolExecutionPolicy` | Authorization before tool execution. |
 | Memory | `AgentMemory`, `FileAgentMemoryStore`, `ConversationCompactor`, `AgentMemorySummary`, `ModelConversationCompactor` | Persisted conversation state with structured compaction. |
 | Context | `AgentContextProvider`, `StaticAgentContextProvider`, `AgentContextProviderManifest`, `TrustedAgentContextProviderExecutionPolicy` | Trusted pre-generation context without writing it into run memory. |

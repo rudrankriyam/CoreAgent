@@ -52,7 +52,7 @@ public enum FoundationModelRuntimeSelection: Sendable {
   case privateCloudCompute(PrivateCloudComputeLanguageModel = PrivateCloudComputeLanguageModel())
   case preferPrivateCloudCompute(
     privateCloudCompute: PrivateCloudComputeLanguageModel = PrivateCloudComputeLanguageModel(),
-    fallback: SystemLanguageModel = .default
+    onDeviceModel: SystemLanguageModel = .default
   )
 
   public func resolve() -> FoundationModelRuntime {
@@ -61,12 +61,12 @@ public enum FoundationModelRuntimeSelection: Sendable {
       return .system(model)
     case .privateCloudCompute(let model):
       return .privateCloudCompute(model)
-    case .preferPrivateCloudCompute(let privateCloudCompute, let fallback):
+    case .preferPrivateCloudCompute(let privateCloudCompute, let onDeviceModel):
       switch privateCloudCompute.availability {
       case .available:
         return .privateCloudCompute(privateCloudCompute)
       case .unavailable:
-        return .system(fallback)
+        return .system(onDeviceModel)
       }
     }
   }
