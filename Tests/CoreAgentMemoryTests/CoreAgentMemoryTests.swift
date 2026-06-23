@@ -467,6 +467,98 @@ struct CoreAgentMemoryTests {
     }
   }
 
+  @Test("Tombstoning an episode cancels every pending derivative")
+  func tombstoneCancelsPendingDerivatives() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let scope = try makeScope()
+    let stores: [any CoreAgentMemoryStore] = [
+      InMemoryCoreAgentMemoryStore(),
+      try SQLiteCoreAgentMemoryStore(
+        databaseURL: directory.appending(path: "memory.sqlite"),
+        configuration: .init(fileProtection: .none, excludesFromBackup: false)
+      ),
+    ]
+
+    for store in stores {
+      let episode = try makeRecord(
+        scope: scope,
+        content: "USER:\nI prefer sencha tea.",
+        kind: .episode
+      )
+      let job = CoreAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
+      let draft = try CoreAgentMemoryCandidateDraft(
+        kind: .preference,
+        content: "The user prefers sencha tea.",
+        authority: .priorUserStatement
+      )
+      let candidate = CoreAgentMemoryCandidate(
+        scope: scope,
+        sourceRecordID: episode.id,
+        draft: draft
+      )
+      try await store.saveEpisode(episode, enqueueing: job)
+      try await store.save(candidate)
+
+      _ = try await store.tombstone(id: episode.id, in: scope, reason: "forgotten")
+
+      #expect(try await store.consolidationJob(id: job.id, in: scope)?.status == .cancelled)
+      let rejected = try #require(try await store.candidate(id: candidate.id, in: scope))
+      #expect(rejected.status == .rejected)
+      #expect(rejected.decisionReason == "source_tombstoned")
+      await #expect(throws: CoreAgentMemoryError.self) {
+        try await store.save(
+          CoreAgentMemoryCandidate(
+            scope: scope,
+            sourceRecordID: episode.id,
+            draft: draft
+          )
+        )
+      }
+
+      let consolidator = TestConsolidator(drafts: [draft])
+      let coordinator = CoreAgentMemoryCoordinator(
+        scope: scope,
+        store: store,
+        disclosurePolicy: .init(destination: .onDevice),
+        consolidator: consolidator
+      )
+      await coordinator.flush()
+      #expect(await consolidator.calls == 0)
+      await #expect(throws: CoreAgentMemoryError.self) {
+        _ = try await coordinator.approve(candidate.id)
+      }
+    }
+
+    var inactiveEpisode = try makeRecord(
+      scope: scope,
+      content: "USER:\nI prefer matcha.",
+      kind: .episode
+    )
+    inactiveEpisode.status = .tombstoned
+    let pendingCandidate = CoreAgentMemoryCandidate(
+      scope: scope,
+      sourceRecordID: inactiveEpisode.id,
+      draft: try .init(
+        kind: .preference,
+        content: "The user prefers matcha.",
+        authority: .priorUserStatement
+      )
+    )
+    let recoveryStore = InMemoryCoreAgentMemoryStore(
+      records: [inactiveEpisode],
+      candidates: [pendingCandidate]
+    )
+    let recoveryCoordinator = CoreAgentMemoryCoordinator(
+      scope: scope,
+      store: recoveryStore,
+      disclosurePolicy: .init(destination: .onDevice)
+    )
+    await #expect(throws: CoreAgentMemoryError.self) {
+      _ = try await recoveryCoordinator.approve(pendingCandidate.id)
+    }
+  }
+
   @Test("Markdown export is deterministic and purge removes registered artifacts")
   func deterministicExportAndPurge() async throws {
     let root = try temporaryDirectory()

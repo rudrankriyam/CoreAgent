@@ -8,6 +8,7 @@ public enum CoreAgentMemoryError: Error, LocalizedError, Sendable {
   case recordNotFound(UUID)
   case candidateNotFound(UUID)
   case consolidationJobNotFound(UUID)
+  case sourceRecordInactive(UUID)
   case invalidCandidateDecision
   case sqlite(String)
   case unsupportedSchemaVersion(Int32)
@@ -27,6 +28,8 @@ public enum CoreAgentMemoryError: Error, LocalizedError, Sendable {
       "Memory candidate \(id.uuidString.lowercased()) was not found."
     case .consolidationJobNotFound(let id):
       "Memory consolidation job \(id.uuidString.lowercased()) was not found."
+    case .sourceRecordInactive(let id):
+      "Memory source record \(id.uuidString.lowercased()) is not active."
     case .invalidCandidateDecision:
       "Only pending memory candidates can be approved or rejected."
     case .sqlite(let message):
@@ -315,6 +318,7 @@ public enum CoreAgentMemoryConsolidationJobStatus: String, Codable, CaseIterable
   case processing
   case completed
   case failed
+  case cancelled
 }
 
 public struct CoreAgentMemoryConsolidationJob: Codable, Equatable, Sendable, Identifiable {

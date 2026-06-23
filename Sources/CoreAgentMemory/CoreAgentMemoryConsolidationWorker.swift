@@ -118,21 +118,18 @@ actor CoreAgentMemoryConsolidationWorker {
       guard let episode = try await store.record(id: job.episodeID, in: scope) else {
         throw CoreAgentMemoryError.recordNotFound(job.episodeID)
       }
-      guard episode.status != .tombstoned else {
-        job.status = .completed
-        job.lastError = nil
+      guard episode.isActive else {
+        job.status = .cancelled
+        job.lastError = "The source episode is not active."
         job.updatedAt = Date()
         try await store.save(job)
         await runtime.emit(
           .init(
-            kind: .consolidationCompleted,
+            kind: .consolidationCancelled,
             scope: scope,
             recordID: job.episodeID,
             jobID: job.id,
-            attributes: [
-              "candidate_count": "0",
-              "skipped_reason": "tombstoned",
-            ]
+            attributes: ["source_status": episode.status.rawValue]
           )
         )
         return
@@ -180,6 +177,11 @@ actor CoreAgentMemoryConsolidationWorker {
     from episode: CoreAgentMemoryRecord,
     job: CoreAgentMemoryConsolidationJob
   ) async throws {
+    guard let currentEpisode = try await store.record(id: episode.id, in: scope),
+      currentEpisode.isActive
+    else {
+      throw CoreAgentMemoryError.sourceRecordInactive(episode.id)
+    }
     let id = Self.candidateID(episodeID: episode.id, draft: draft)
     let candidate: CoreAgentMemoryCandidate
     if let existing = try await store.candidate(id: id, in: scope) {

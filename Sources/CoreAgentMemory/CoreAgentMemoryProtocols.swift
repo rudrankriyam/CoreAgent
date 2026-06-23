@@ -113,6 +113,7 @@ public enum CoreAgentMemoryEventKind: String, Codable, Sendable {
   case consolidationStarted
   case consolidationCompleted
   case consolidationFailed
+  case consolidationCancelled
   case recordTombstoned
   case recordPurged
   case scopePurged

@@ -127,6 +127,23 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     record.updatedAt = tombstone.deletedAt
     storedRecords[id] = record
     storedTombstones[id] = tombstone
+    for (candidateID, var candidate) in storedCandidates
+    where candidate.scope == scope
+      && candidate.sourceRecordID == id
+      && candidate.status == .pending
+    {
+      candidate.status = .rejected
+      candidate.decidedAt = tombstone.deletedAt
+      candidate.decisionReason = "source_tombstoned"
+      storedCandidates[candidateID] = candidate
+    }
+    for (jobID, var job) in storedJobs
+    where job.scope == scope && job.episodeID == id && job.status != .completed {
+      job.status = .cancelled
+      job.lastError = "The source episode was tombstoned."
+      job.updatedAt = tombstone.deletedAt
+      storedJobs[jobID] = job
+    }
     return tombstone
   }
 
@@ -163,8 +180,12 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func save(_ candidate: CoreAgentMemoryCandidate) throws {
     try ensureScope(storedCandidates[candidate.id]?.scope, equals: candidate.scope)
-    guard storedRecords[candidate.sourceRecordID]?.scope == candidate.scope else {
+    guard let source = storedRecords[candidate.sourceRecordID], source.scope == candidate.scope
+    else {
       throw CoreAgentMemoryError.scopeMismatch
+    }
+    guard source.isActive || candidate.status == .rejected else {
+      throw CoreAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
     }
     storedCandidates[candidate.id] = candidate
   }
@@ -199,6 +220,9 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     guard candidate.status == .pending else {
       throw CoreAgentMemoryError.invalidCandidateDecision
     }
+    guard let source = storedRecords[candidate.sourceRecordID], source.isActive else {
+      throw CoreAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
+    }
     candidate.status = .approved
     candidate.decidedAt = Date()
     storedCandidates[id] = candidate
@@ -224,8 +248,11 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func save(_ job: CoreAgentMemoryConsolidationJob) throws {
     try ensureScope(storedJobs[job.id]?.scope, equals: job.scope)
-    guard storedRecords[job.episodeID]?.scope == job.scope else {
+    guard let source = storedRecords[job.episodeID], source.scope == job.scope else {
       throw CoreAgentMemoryError.scopeMismatch
+    }
+    guard source.isActive || job.status == .cancelled else {
+      throw CoreAgentMemoryError.sourceRecordInactive(job.episodeID)
     }
     storedJobs[job.id] = job
   }

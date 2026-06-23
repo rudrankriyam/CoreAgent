@@ -200,6 +200,22 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       record.updatedAt = tombstone.deletedAt
       try saveRecord(record)
       try saveTombstone(tombstone)
+      for var candidate in try candidates(in: scope, status: .pending)
+      where candidate.sourceRecordID == id {
+        candidate.status = .rejected
+        candidate.decidedAt = tombstone.deletedAt
+        candidate.decisionReason = "source_tombstoned"
+        try saveCandidate(candidate)
+      }
+      for var job in try consolidationJobs(
+        in: scope,
+        statuses: [.queued, .processing, .failed]
+      ) where job.episodeID == id {
+        job.status = .cancelled
+        job.lastError = "The source episode was tombstoned."
+        job.updatedAt = tombstone.deletedAt
+        try saveJob(job)
+      }
     }
     try refreshFilePolicies()
     return tombstone
@@ -329,6 +345,11 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       }
       guard candidate.status == .pending else {
         throw CoreAgentMemoryError.invalidCandidateDecision
+      }
+      guard let source = try fetchRecord(id: candidate.sourceRecordID, scope: scope),
+        source.isActive
+      else {
+        throw CoreAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
       }
       candidate.status = .approved
       candidate.decidedAt = Date()
@@ -598,8 +619,11 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   private func saveCandidate(_ candidate: CoreAgentMemoryCandidate) throws {
     try ensureScope(for: candidate.id, table: "memory_candidates", equals: candidate.scope)
-    guard try fetchRecord(id: candidate.sourceRecordID, scope: candidate.scope) != nil else {
+    guard let source = try fetchRecord(id: candidate.sourceRecordID, scope: candidate.scope) else {
       throw CoreAgentMemoryError.scopeMismatch
+    }
+    guard source.isActive || candidate.status == .rejected else {
+      throw CoreAgentMemoryError.sourceRecordInactive(candidate.sourceRecordID)
     }
     let statement = try prepare(
       """
@@ -622,8 +646,11 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   private func saveJob(_ job: CoreAgentMemoryConsolidationJob) throws {
     try ensureScope(for: job.id, table: "memory_jobs", equals: job.scope)
-    guard try fetchRecord(id: job.episodeID, scope: job.scope) != nil else {
+    guard let source = try fetchRecord(id: job.episodeID, scope: job.scope) else {
       throw CoreAgentMemoryError.scopeMismatch
+    }
+    guard source.isActive || job.status == .cancelled else {
+      throw CoreAgentMemoryError.sourceRecordInactive(job.episodeID)
     }
     let statement = try prepare(
       """
