@@ -18,14 +18,20 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     self.storedTombstones = Dictionary(uniqueKeysWithValues: tombstones.map { ($0.id, $0) })
   }
 
-  public func save(_ record: CoreAgentMemoryRecord) {
+  public func save(_ record: CoreAgentMemoryRecord) throws {
+    try ensureScope(storedRecords[record.id]?.scope, equals: record.scope)
     storedRecords[record.id] = record
   }
 
   public func saveEpisode(
     _ episode: CoreAgentMemoryRecord,
     enqueueing job: CoreAgentMemoryConsolidationJob?
-  ) {
+  ) throws {
+    try ensureScope(storedRecords[episode.id]?.scope, equals: episode.scope)
+    if let job {
+      try ensureScope(storedJobs[job.id]?.scope, equals: job.scope)
+      guard job.scope == episode.scope else { throw CoreAgentMemoryError.scopeMismatch }
+    }
     storedRecords[episode.id] = episode
     if let job { storedJobs[job.id] = job }
   }
@@ -34,6 +40,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     _ correction: CoreAgentMemoryRecord,
     superseding recordIDs: [UUID]
   ) throws {
+    try ensureScope(storedRecords[correction.id]?.scope, equals: correction.scope)
     for id in recordIDs {
       guard var existing = storedRecords[id], existing.scope == correction.scope else {
         throw CoreAgentMemoryError.recordNotFound(id)
@@ -135,7 +142,11 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     storedTombstones = storedTombstones.filter { $0.value.scope != scope }
   }
 
-  public func save(_ candidate: CoreAgentMemoryCandidate) {
+  public func save(_ candidate: CoreAgentMemoryCandidate) throws {
+    try ensureScope(storedCandidates[candidate.id]?.scope, equals: candidate.scope)
+    guard storedRecords[candidate.sourceRecordID]?.scope == candidate.scope else {
+      throw CoreAgentMemoryError.scopeMismatch
+    }
     storedCandidates[candidate.id] = candidate
   }
 
@@ -160,6 +171,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     as record: CoreAgentMemoryRecord,
     in scope: CoreAgentMemoryScope
   ) throws {
+    guard record.scope == scope else { throw CoreAgentMemoryError.scopeMismatch }
     guard var candidate = storedCandidates[id], candidate.scope == scope else {
       throw CoreAgentMemoryError.candidateNotFound(id)
     }
@@ -189,7 +201,11 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     storedCandidates[id] = candidate
   }
 
-  public func save(_ job: CoreAgentMemoryConsolidationJob) {
+  public func save(_ job: CoreAgentMemoryConsolidationJob) throws {
+    try ensureScope(storedJobs[job.id]?.scope, equals: job.scope)
+    guard storedRecords[job.episodeID]?.scope == job.scope else {
+      throw CoreAgentMemoryError.scopeMismatch
+    }
     storedJobs[job.id] = job
   }
 
@@ -222,5 +238,14 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
   ) -> Bool {
     if lhs.createdAt != rhs.createdAt { return lhs.createdAt < rhs.createdAt }
     return lhs.id.uuidString < rhs.id.uuidString
+  }
+
+  private func ensureScope(
+    _ existing: CoreAgentMemoryScope?,
+    equals proposed: CoreAgentMemoryScope
+  ) throws {
+    guard existing == nil || existing == proposed else {
+      throw CoreAgentMemoryError.scopeMismatch
+    }
   }
 }

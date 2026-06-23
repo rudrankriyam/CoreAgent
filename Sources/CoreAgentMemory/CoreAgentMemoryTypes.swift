@@ -4,6 +4,7 @@ import Foundation
 public enum CoreAgentMemoryError: Error, LocalizedError, Sendable {
   case invalidScopeComponent(String)
   case emptyContent
+  case scopeMismatch
   case recordNotFound(UUID)
   case candidateNotFound(UUID)
   case consolidationJobNotFound(UUID)
@@ -18,6 +19,8 @@ public enum CoreAgentMemoryError: Error, LocalizedError, Sendable {
       "Memory scope requires a nonempty \(component)."
     case .emptyContent:
       "Memory content must not be empty."
+    case .scopeMismatch:
+      "A memory object cannot move between application, user, or agent scopes."
     case .recordNotFound(let id):
       "Memory record \(id.uuidString.lowercased()) was not found."
     case .candidateNotFound(let id):
