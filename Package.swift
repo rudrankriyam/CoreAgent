@@ -88,7 +88,11 @@ let package = Package(
     ),
     .testTarget(
       name: "CoreAgentTests",
-      dependencies: ["CoreAgent", "CoreAgentTestSupport", "CoreAgentProviders"],
+      dependencies: ["CoreAgent", "CoreAgentTestSupport"]
+    ),
+    .testTarget(
+      name: "CoreAgentProviderTests",
+      dependencies: ["CoreAgent", "CoreAgentProviders"],
       swiftSettings: [
         .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"])),
         .define("COREAGENT_CLAUDE", .when(traits: ["Claude"])),
