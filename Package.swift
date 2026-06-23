@@ -11,6 +11,7 @@ let package = Package(
   ],
   products: [
     .library(name: "CoreAgent", targets: ["CoreAgent"]),
+    .library(name: "CoreAgentMemory", targets: ["CoreAgentMemory"]),
     .library(name: "CoreAgentTestSupport", targets: ["CoreAgentTestSupport"]),
     .library(name: "CoreAgentProviders", targets: ["CoreAgentProviders"]),
   ],
@@ -50,6 +51,11 @@ let package = Package(
   ],
   targets: [
     .target(name: "CoreAgent"),
+    .target(
+      name: "CoreAgentMemory",
+      dependencies: ["CoreAgent"],
+      linkerSettings: [.linkedLibrary("sqlite3")]
+    ),
     .target(
       name: "CoreAgentTestSupport",
       dependencies: ["CoreAgent"]
