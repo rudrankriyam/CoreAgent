@@ -95,5 +95,13 @@ let package = Package(
         .define("COREAGENT_GEMINI", .when(traits: ["Gemini"])),
       ]
     ),
+    .testTarget(
+      name: "CoreAgentMemoryTests",
+      dependencies: ["CoreAgent", "CoreAgentMemory"]
+    ),
+    .testTarget(
+      name: "CoreAgentMemoryIntegrationTests",
+      dependencies: ["CoreAgent", "CoreAgentMemory", "CoreAgentTestSupport"]
+    ),
   ]
 )
