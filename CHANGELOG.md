@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - Unreleased
+
+- Renamed the Apple utilities helper from `openAICompatible(...)` to
+  `chatCompletions(...)` and removed the OpenAI-specific type alias. The helper
+  is a generic Chat Completions protocol client, not an official OpenAI SDK.
+
 ## 0.2.0 - 2026-06-23
 
 - Rebuilt CoreAgent on native Xcode 27 Foundation Models types.

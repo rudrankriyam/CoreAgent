@@ -6,9 +6,9 @@ import Testing
 #if COREAGENT_APPLE_UTILITIES
   @Suite("Apple utilities provider smoke tests")
   struct AppleUtilitiesProviderTests {
-    @Test("Constructs the OpenAI-compatible provider without a request or API key")
+    @Test("Constructs the generic Chat Completions client without a request")
     func constructionOnly() throws {
-      let model = CoreAgentProviderModels.openAICompatible(
+      let model = CoreAgentProviderModels.chatCompletions(
         name: "placeholder",
         baseURL: URL(string: "https://example.invalid")!,
         supportsGuidedGeneration: false

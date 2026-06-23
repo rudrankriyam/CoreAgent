@@ -26,17 +26,19 @@ public enum CoreAgentProviderFeatures {
 #if COREAGENT_APPLE_UTILITIES
   import FoundationModelsUtilities
 
-  /// Apple's generic OpenAI-compatible Chat Completions language model.
-  public typealias OpenAICompatibleLanguageModel = ChatCompletionsLanguageModel
-
   extension CoreAgentProviderModels {
-    public static func openAICompatible(
+    /// Creates Apple's generic language model for a Chat Completions endpoint.
+    ///
+    /// This is a protocol client for local, self-hosted, or developer-controlled
+    /// servers. It is not an official OpenAI client and does not provide secure
+    /// client-side credential management for hosted model APIs.
+    public static func chatCompletions(
       name: String,
       baseURL: URL,
       headers: [String: String] = [:],
       supportsGuidedGeneration: Bool = true
-    ) -> OpenAICompatibleLanguageModel {
-      OpenAICompatibleLanguageModel(
+    ) -> ChatCompletionsLanguageModel {
+      ChatCompletionsLanguageModel(
         name: name,
         url: baseURL,
         additionalHeaders: headers,
