@@ -19,5 +19,9 @@ let package = Package(
       name: "CoreAgentTestSupport",
       dependencies: ["CoreAgent"]
     ),
+    .testTarget(
+      name: "CoreAgentTests",
+      dependencies: ["CoreAgent", "CoreAgentTestSupport"]
+    ),
   ]
 )
