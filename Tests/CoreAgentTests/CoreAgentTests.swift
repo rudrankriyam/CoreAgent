@@ -39,6 +39,25 @@ private struct TestAnswer: Sendable {
   }
 #endif
 
+#if COREAGENT_GEMINI
+  @Suite("Gemini provider smoke tests")
+  struct GeminiProviderTests {
+    @Test("Compiles the first-party Gemini provider without requiring Firebase configuration")
+    func compileOnly() {
+      #expect(CoreAgentProviderFeatures.gemini)
+    }
+
+    // This function is deliberately not executed. Constructing FirebaseAI at
+    // runtime requires an app's GoogleService-Info.plist, while type-checking it
+    // proves the adapter returns a Foundation Models LanguageModel accepted by
+    // CoreAgent with no network request or secret.
+    private func compileSession(client: FirebaseAIClient) throws {
+      let model = CoreAgentProviderModels.gemini(using: client, name: "gemini-placeholder")
+      _ = try CoreAgentSession(model: model)
+    }
+  }
+#endif
+
 @Generable
 private struct EchoArguments: Sendable {
   let value: String

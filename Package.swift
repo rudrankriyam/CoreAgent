@@ -24,6 +24,15 @@ let package = Package(
       name: "Claude",
       description: "Enable Anthropic's ClaudeForFoundationModels provider."
     ),
+    .trait(
+      name: "Gemini",
+      description: "Enable Firebase AI Logic's Gemini Foundation Models provider."
+    ),
+    .trait(
+      name: "AllProviders",
+      description: "Enable every first-party provider integration.",
+      enabledTraits: ["AppleUtilities", "Claude", "Gemini"]
+    ),
   ],
   dependencies: [
     .package(
@@ -33,6 +42,10 @@ let package = Package(
     .package(
       url: "https://github.com/anthropics/ClaudeForFoundationModels.git",
       exact: "0.1.2"
+    ),
+    .package(
+      url: "https://github.com/firebase/firebase-ios-sdk.git",
+      revision: "eb640a7bd9f8f4e4843e61c12a24c0abe4044443"
     ),
   ],
   targets: [
@@ -55,10 +68,16 @@ let package = Package(
           package: "ClaudeForFoundationModels",
           condition: .when(traits: ["Claude"])
         ),
+        .product(
+          name: "FirebaseAILogic",
+          package: "firebase-ios-sdk",
+          condition: .when(traits: ["Gemini"])
+        ),
       ],
       swiftSettings: [
         .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"])),
         .define("COREAGENT_CLAUDE", .when(traits: ["Claude"])),
+        .define("COREAGENT_GEMINI", .when(traits: ["Gemini"])),
       ]
     ),
     .testTarget(
@@ -67,6 +86,7 @@ let package = Package(
       swiftSettings: [
         .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"])),
         .define("COREAGENT_CLAUDE", .when(traits: ["Claude"])),
+        .define("COREAGENT_GEMINI", .when(traits: ["Gemini"])),
       ]
     ),
   ]

@@ -15,6 +15,12 @@ public enum CoreAgentProviderFeatures {
   #else
     public static let claude = false
   #endif
+
+  #if COREAGENT_GEMINI
+    public static let gemini = true
+  #else
+    public static let gemini = false
+  #endif
 }
 
 #if COREAGENT_APPLE_UTILITIES
@@ -65,6 +71,33 @@ public enum CoreAgentProviderFeatures {
         serverTools: serverTools,
         baseURL: baseURL,
         timeout: timeout
+      )
+    }
+  }
+#endif
+
+#if COREAGENT_GEMINI
+  import FirebaseAILogic
+
+  /// Firebase AI Logic's first-party Gemini Foundation Models implementation.
+  public typealias GoogleGeminiLanguageModel = GeminiLanguageModel
+  public typealias FirebaseAIClient = FirebaseAI
+
+  extension CoreAgentProviderModels {
+    public static func gemini(
+      using client: FirebaseAIClient,
+      name: String,
+      safetySettings: [SafetySetting]? = nil,
+      options: GeminiGenerationOptions? = nil,
+      serverTools: [any GeminiTool]? = nil,
+      requestOptions: RequestOptions = RequestOptions()
+    ) -> GoogleGeminiLanguageModel {
+      client.geminiLanguageModel(
+        name: name,
+        safetySettings: safetySettings,
+        options: options,
+        serverTools: serverTools,
+        requestOptions: requestOptions
       )
     }
   }
