@@ -457,6 +457,9 @@ actor CoreAgentMemoryRuntime {
     guard let episode = try await store.record(id: candidate.sourceRecordID, in: scope) else {
       throw CoreAgentMemoryError.recordNotFound(candidate.sourceRecordID)
     }
+    guard episode.status != .tombstoned else {
+      throw CoreAgentMemoryError.invalidCandidateDecision
+    }
     let draft = candidate.draft
     let record = try CoreAgentMemoryRecord(
       scope: scope,

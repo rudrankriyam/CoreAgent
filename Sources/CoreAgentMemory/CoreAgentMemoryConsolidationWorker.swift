@@ -118,6 +118,25 @@ actor CoreAgentMemoryConsolidationWorker {
       guard let episode = try await store.record(id: job.episodeID, in: scope) else {
         throw CoreAgentMemoryError.recordNotFound(job.episodeID)
       }
+      guard episode.status != .tombstoned else {
+        job.status = .completed
+        job.lastError = nil
+        job.updatedAt = Date()
+        try await store.save(job)
+        await runtime.emit(
+          .init(
+            kind: .consolidationCompleted,
+            scope: scope,
+            recordID: job.episodeID,
+            jobID: job.id,
+            attributes: [
+              "candidate_count": "0",
+              "skipped_reason": "tombstoned",
+            ]
+          )
+        )
+        return
+      }
       let drafts = try await consolidator.consolidate(episode: episode)
       for draft in drafts where draft.kind != .episode {
         try await propose(draft, from: episode, job: job)

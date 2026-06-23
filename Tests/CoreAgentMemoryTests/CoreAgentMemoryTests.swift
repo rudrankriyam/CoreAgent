@@ -413,6 +413,60 @@ struct CoreAgentMemoryTests {
     )
   }
 
+  @Test("Forgotten episodes do not consolidate pending jobs")
+  func forgottenEpisodesSkipConsolidation() async throws {
+    let scope = try makeScope()
+    let store = InMemoryCoreAgentMemoryStore()
+    let episode = try makeRecord(scope: scope, content: "USER:\nI prefer matcha.", kind: .episode)
+    try await store.saveEpisode(
+      episode,
+      enqueueing: .init(scope: scope, episodeID: episode.id)
+    )
+    let consolidator = TestConsolidator(
+      drafts: [try .init(kind: .preference, content: "The user prefers matcha.")]
+    )
+    let coordinator = CoreAgentMemoryCoordinator(
+      scope: scope,
+      store: store,
+      disclosurePolicy: .init(destination: .onDevice),
+      consolidator: consolidator
+    )
+
+    try await coordinator.forget(episode.id, reason: "user_request")
+    await coordinator.flush()
+
+    #expect(await consolidator.calls == 0)
+    #expect(try await coordinator.pendingCandidates().isEmpty)
+  }
+
+  @Test("Approving a candidate from a forgotten episode fails")
+  func forgottenEpisodesCannotApproveCandidates() async throws {
+    let scope = try makeScope()
+    let store = InMemoryCoreAgentMemoryStore()
+    let episode = try makeRecord(scope: scope, content: "USER:\nI prefer sencha.", kind: .episode)
+    try await store.saveEpisode(
+      episode,
+      enqueueing: .init(scope: scope, episodeID: episode.id)
+    )
+    let coordinator = CoreAgentMemoryCoordinator(
+      scope: scope,
+      store: store,
+      disclosurePolicy: .init(destination: .onDevice),
+      consolidator: TestConsolidator(
+        drafts: [try .init(kind: .preference, content: "The user prefers sencha.")]
+      )
+    )
+
+    await coordinator.flush()
+    let candidate = try #require(try await coordinator.pendingCandidates().first)
+
+    try await coordinator.forget(episode.id, reason: "user_request")
+
+    await #expect(throws: CoreAgentMemoryError.self) {
+      _ = try await coordinator.approve(candidate.id)
+    }
+  }
+
   @Test("Markdown export is deterministic and purge removes registered artifacts")
   func deterministicExportAndPurge() async throws {
     let root = try temporaryDirectory()
