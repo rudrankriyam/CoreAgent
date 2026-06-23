@@ -1,4 +1,5 @@
 import CoreAgent
+import CoreAgentProviders
 import CoreAgentTestSupport
 import CoreGraphics
 import Foundation
@@ -9,6 +10,22 @@ import Testing
 private struct TestAnswer: Sendable {
   let value: String
 }
+
+#if COREAGENT_APPLE_UTILITIES
+  @Suite("Apple utilities provider smoke tests")
+  struct AppleUtilitiesProviderTests {
+    @Test("Constructs the OpenAI-compatible provider without a request or API key")
+    func constructionOnly() throws {
+      let model = CoreAgentProviderModels.openAICompatible(
+        name: "placeholder",
+        baseURL: URL(string: "https://example.invalid")!,
+        supportsGuidedGeneration: false
+      )
+      _ = try CoreAgentSession(model: model)
+      #expect(CoreAgentProviderFeatures.appleUtilities)
+    }
+  }
+#endif
 
 @Generable
 private struct EchoArguments: Sendable {
