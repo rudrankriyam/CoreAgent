@@ -33,13 +33,13 @@ Linux compatibility claim.
 
 ## Installation
 
-While `0.2.0` is unreleased, depend on `main`:
+Add CoreAgent with Swift Package Manager:
 
 ```swift
 dependencies: [
   .package(
     url: "https://github.com/rudrankriyam/CoreAgent.git",
-    branch: "main"
+    from: "0.2.0"
   )
 ]
 ```
@@ -375,7 +375,7 @@ Enable one or more SwiftPM Traits on the CoreAgent dependency:
 ```swift
 .package(
   url: "https://github.com/rudrankriyam/CoreAgent.git",
-  branch: "main",
+  from: "0.2.0",
   traits: ["AppleUtilities", "Claude"]
 )
 ```

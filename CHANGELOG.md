@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0 - Unreleased
+## 0.2.0 - 2026-06-23
 
 - Rebuilt CoreAgent on native Xcode 27 Foundation Models types.
 - Added persistent `CoreAgentSession` text, structured, schema, and streaming
