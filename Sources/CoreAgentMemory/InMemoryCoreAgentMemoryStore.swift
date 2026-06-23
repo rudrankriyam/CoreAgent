@@ -5,6 +5,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
   private var storedCandidates: [UUID: CoreAgentMemoryCandidate]
   private var storedJobs: [UUID: CoreAgentMemoryConsolidationJob]
   private var storedTombstones: [UUID: CoreAgentMemoryTombstone]
+  private var storedExportDirectories: [CoreAgentMemoryScope: Set<String>]
 
   public init(
     records: [CoreAgentMemoryRecord] = [],
@@ -16,6 +17,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     self.storedCandidates = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
     self.storedJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
     self.storedTombstones = Dictionary(uniqueKeysWithValues: tombstones.map { ($0.id, $0) })
+    self.storedExportDirectories = [:]
   }
 
   public func save(_ record: CoreAgentMemoryRecord) throws {
@@ -140,6 +142,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     storedCandidates = storedCandidates.filter { $0.value.scope != scope }
     storedJobs = storedJobs.filter { $0.value.scope != scope }
     storedTombstones = storedTombstones.filter { $0.value.scope != scope }
+    storedExportDirectories.removeValue(forKey: scope)
   }
 
   public func save(_ candidate: CoreAgentMemoryCandidate) throws {
@@ -226,6 +229,14 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
         if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
         return $0.id.uuidString < $1.id.uuidString
       }
+  }
+
+  public func registerExportDirectory(_ path: String, in scope: CoreAgentMemoryScope) {
+    storedExportDirectories[scope, default: []].insert(path)
+  }
+
+  public func exportDirectories(in scope: CoreAgentMemoryScope) -> [String] {
+    storedExportDirectories[scope, default: []].sorted()
   }
 
   private static func terms(in query: String) -> [String] {

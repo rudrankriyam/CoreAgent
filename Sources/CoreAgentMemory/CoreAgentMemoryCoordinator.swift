@@ -250,31 +250,71 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   }
 
   public func forget(_ id: UUID, reason: String? = nil) async throws {
+    let exportDirectories = try await store.exportDirectories(in: scope)
     _ = try await store.tombstone(id: id, in: scope, reason: reason)
     await runtime.emit(.init(kind: .recordTombstoned, scope: scope, recordID: id))
     await runtime.removeDerivative(id: id)
+    for path in exportDirectories {
+      try CoreAgentMemoryMarkdownExporter.remove(
+        recordID: id,
+        scope: scope,
+        from: URL(fileURLWithPath: path)
+      )
+    }
   }
 
   public func purge(_ id: UUID) async throws {
+    let exportDirectories = try await store.exportDirectories(in: scope)
     if try await store.record(id: id, in: scope) != nil {
       _ = try await store.tombstone(id: id, in: scope, reason: "hard_purge")
     }
     await runtime.removeDerivative(id: id)
     try await store.purge(id: id, in: scope)
+    for path in exportDirectories {
+      try CoreAgentMemoryMarkdownExporter.remove(
+        recordID: id,
+        scope: scope,
+        from: URL(fileURLWithPath: path)
+      )
+    }
     await runtime.emit(.init(kind: .recordPurged, scope: scope, recordID: id))
   }
 
   public func purge() async throws {
+    let exportDirectories = try await store.exportDirectories(in: scope)
     for record in try await store.records(in: scope) where record.status != .tombstoned {
       _ = try await store.tombstone(id: record.id, in: scope, reason: "scope_purge")
     }
     await runtime.removeAllDerivatives()
+    for path in exportDirectories {
+      try CoreAgentMemoryMarkdownExporter.removeAll(
+        scope: scope,
+        from: URL(fileURLWithPath: path)
+      )
+    }
     try await store.purge(scope: scope)
     await runtime.emit(.init(kind: .scopePurged, scope: scope))
   }
 
   public func rebuildIndexes() async throws {
     try await runtime.rebuildIndex()
+  }
+
+  @discardableResult
+  public func exportMarkdown(
+    to directory: URL,
+    exportedAt: Date = Date(),
+    configuration: CoreAgentMemoryMarkdownExportConfiguration = .default
+  ) async throws -> CoreAgentMemoryMarkdownManifest {
+    let directory = directory.standardizedFileURL
+    try await store.registerExportDirectory(directory.path, in: scope)
+    return try CoreAgentMemoryMarkdownExporter.export(
+      records: try await store.records(in: scope),
+      scope: scope,
+      to: directory,
+      exportedAt: exportedAt,
+      configuration: configuration
+    )
   }
 
   private static func captureEpisode(

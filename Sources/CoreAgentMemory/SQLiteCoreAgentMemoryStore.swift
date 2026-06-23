@@ -257,7 +257,10 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       try bind(scope, to: fts)
       try fts.run()
 
-      for table in ["memory_candidates", "memory_jobs", "memory_tombstones", "memory_records"] {
+      for table in [
+        "memory_candidates", "memory_jobs", "memory_tombstones", "memory_exports",
+        "memory_records",
+      ] {
         let statement = try prepare(
           "DELETE FROM \(table) WHERE application_id = ? AND user_id = ? AND agent_id = ?"
         )
@@ -381,6 +384,39 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       try statement.bind(status.rawValue, at: Int32(offset + 4))
     }
     return try decodeRows(statement, as: CoreAgentMemoryConsolidationJob.self)
+  }
+
+  public func registerExportDirectory(
+    _ path: String,
+    in scope: CoreAgentMemoryScope
+  ) throws {
+    let statement = try prepare(
+      """
+      INSERT OR REPLACE INTO memory_exports (
+        application_id, user_id, agent_id, path, registered_at
+      ) VALUES (?, ?, ?, ?, ?)
+      """
+    )
+    try bind(scope, to: statement)
+    try statement.bind(path, at: 4)
+    try statement.bind(Date(), at: 5)
+    try statement.run()
+  }
+
+  public func exportDirectories(in scope: CoreAgentMemoryScope) throws -> [String] {
+    let statement = try prepare(
+      """
+      SELECT path FROM memory_exports
+      WHERE application_id = ? AND user_id = ? AND agent_id = ?
+      ORDER BY path ASC
+      """
+    )
+    try bind(scope, to: statement)
+    var paths: [String] = []
+    while try statement.step() {
+      paths.append(statement.text(at: 0))
+    }
+    return paths
   }
 
   private func fetchRecord(
@@ -774,6 +810,18 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
         agent_id TEXT NOT NULL,
         deleted_at REAL NOT NULL,
         payload BLOB NOT NULL
+      )
+      """
+    )
+    try connection.execute(
+      """
+      CREATE TABLE IF NOT EXISTS memory_exports (
+        application_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        registered_at REAL NOT NULL,
+        PRIMARY KEY (application_id, user_id, agent_id, path)
       )
       """
     )

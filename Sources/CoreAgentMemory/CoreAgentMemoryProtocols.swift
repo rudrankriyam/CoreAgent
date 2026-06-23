@@ -59,6 +59,8 @@ public protocol CoreAgentMemoryStore: Sendable {
     in scope: CoreAgentMemoryScope,
     statuses: Set<CoreAgentMemoryConsolidationJobStatus>
   ) async throws -> [CoreAgentMemoryConsolidationJob]
+  func registerExportDirectory(_ path: String, in scope: CoreAgentMemoryScope) async throws
+  func exportDirectories(in scope: CoreAgentMemoryScope) async throws -> [String]
 }
 
 public protocol CoreAgentMemoryIndex: Sendable {
