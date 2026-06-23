@@ -75,7 +75,7 @@ public struct RecordedLanguageModel: LanguageModel {
     ]
   ) {
     self.recorder = RecordedLanguageModelRecorder(steps: steps)
-    self.capabilities = LanguageModelCapabilities(capabilities: capabilities)
+    self.capabilities = LanguageModelCapabilities(capabilities)
   }
 
   public var executorConfiguration: RecordedLanguageModelExecutor.Configuration {

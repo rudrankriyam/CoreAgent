@@ -11,6 +11,7 @@ let package = Package(
   ],
   products: [
     .library(name: "CoreAgent", targets: ["CoreAgent"]),
+    .library(name: "CoreAgentMemory", targets: ["CoreAgentMemory"]),
     .library(name: "CoreAgentTestSupport", targets: ["CoreAgentTestSupport"]),
     .library(name: "CoreAgentProviders", targets: ["CoreAgentProviders"]),
   ],
@@ -51,6 +52,11 @@ let package = Package(
   targets: [
     .target(name: "CoreAgent"),
     .target(
+      name: "CoreAgentMemory",
+      dependencies: ["CoreAgent"],
+      linkerSettings: [.linkedLibrary("sqlite3")]
+    ),
+    .target(
       name: "CoreAgentTestSupport",
       dependencies: ["CoreAgent"]
     ),
@@ -82,12 +88,24 @@ let package = Package(
     ),
     .testTarget(
       name: "CoreAgentTests",
-      dependencies: ["CoreAgent", "CoreAgentTestSupport", "CoreAgentProviders"],
+      dependencies: ["CoreAgent", "CoreAgentTestSupport"]
+    ),
+    .testTarget(
+      name: "CoreAgentProviderTests",
+      dependencies: ["CoreAgent", "CoreAgentProviders"],
       swiftSettings: [
         .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"])),
         .define("COREAGENT_CLAUDE", .when(traits: ["Claude"])),
         .define("COREAGENT_GEMINI", .when(traits: ["Gemini"])),
       ]
+    ),
+    .testTarget(
+      name: "CoreAgentMemoryTests",
+      dependencies: ["CoreAgent", "CoreAgentMemory"]
+    ),
+    .testTarget(
+      name: "CoreAgentMemoryIntegrationTests",
+      dependencies: ["CoreAgent", "CoreAgentMemory", "CoreAgentTestSupport"]
     ),
   ]
 )

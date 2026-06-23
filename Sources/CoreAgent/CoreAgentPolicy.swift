@@ -265,7 +265,7 @@ struct CoreAgentGovernedTool: Tool {
   typealias Arguments = GeneratedContent
   typealias Output = Prompt
 
-  let base: AnyTool
+  let base: CoreAgentAnyTool
   let manifest: CoreAgentToolManifest
   let configuration: CoreAgentToolConfiguration
   let runtime: CoreAgentToolRuntime
@@ -375,6 +375,28 @@ struct CoreAgentGovernedTool: Tool {
       )
       throw error
     }
+  }
+}
+
+struct CoreAgentAnyTool: Sendable {
+  let name: String
+  let description: String
+  let parameters: GenerationSchema
+  private let callImplementation: @Sendable (GeneratedContent) async throws -> Prompt
+
+  init<ToolType: Tool>(_ tool: ToolType) {
+    self.name = tool.name
+    self.description = tool.description
+    self.parameters = tool.parameters
+    self.callImplementation = { content in
+      let arguments = try ToolType.Arguments(content)
+      let output = try await tool.call(arguments: arguments)
+      return Prompt(output)
+    }
+  }
+
+  func call(arguments: GeneratedContent) async throws -> Prompt {
+    try await callImplementation(arguments)
   }
 }
 

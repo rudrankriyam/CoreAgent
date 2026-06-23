@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  xcode-27:
+    runs-on: macos-26
+    outputs:
+      available: ${{ steps.detect.outputs.available }}
+    steps:
+      - name: Detect Xcode 27
+        id: detect
+        shell: bash
+        run: |
+          if find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | grep -q .; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::GitHub's macos-26 image does not yet include Xcode 27."
+          fi
+
+  core-and-memory:
+    needs: xcode-27
+    if: needs.xcode-27.outputs.available == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27
+        shell: bash
+        run: |
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
+          test -n "$XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          xcodebuild -version
+      - name: Check formatting
+        run: xcrun swift-format lint --strict --recursive Package.swift Sources Tests
+      - name: Build all test targets
+        run: swift build --build-tests
+      - name: Run default and memory tests
+        run: swift test
+
+  providers:
+    needs: xcode-27
+    if: needs.xcode-27.outputs.available == 'true'
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27
+        shell: bash
+        run: |
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
+          test -n "$XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+      - name: Test every provider trait
+        run: swift test --traits AllProviders
+
+  platform-builds:
+    needs: xcode-27
+    if: needs.xcode-27.outputs.available == 'true'
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        destination:
+          - generic/platform=iOS
+          - generic/platform=visionOS
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27
+        shell: bash
+        run: |
+          XCODE_PATH="$(find /Applications -maxdepth 1 -type d -name 'Xcode_27*.app' | sort | tail -1)"
+          test -n "$XCODE_PATH"
+          sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+      - name: Build package products
+        run: >-
+          xcodebuild build
+          -scheme CoreAgent-Package
+          -destination '${{ matrix.destination }}'
+          CODE_SIGNING_ALLOWED=NO
+
+  hosted-runner-notice:
+    needs: xcode-27
+    if: needs.xcode-27.outputs.available != 'true'
+    runs-on: macos-26
+    steps:
+      - name: Report unavailable toolchain
+        run: |
+          echo "### Xcode 27 CI is waiting on the GitHub-hosted runner image." >> "$GITHUB_STEP_SUMMARY"
+          echo "The workflow will enable all build and test jobs automatically when Xcode 27 appears under /Applications." >> "$GITHUB_STEP_SUMMARY"
