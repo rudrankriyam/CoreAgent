@@ -707,8 +707,6 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     guard version <= schemaVersion else {
       throw CoreAgentMemoryError.unsupportedSchemaVersion(version)
     }
-    guard version == 0 else { return }
-
     try connection.execute(
       """
       CREATE TABLE IF NOT EXISTS memory_records (

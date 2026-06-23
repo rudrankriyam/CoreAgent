@@ -247,6 +247,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
 
   public func flush() async {
     await consolidationWorker?.flush()
+    await runtime.flushIndexRepairs()
   }
 
   public func forget(_ id: UUID, reason: String? = nil) async throws {
@@ -422,6 +423,7 @@ actor CoreAgentMemoryRuntime {
   private let disclosurePolicy: CoreAgentMemoryDisclosurePolicy
   private let retrievalConfiguration: CoreAgentMemoryRetrievalConfiguration
   private let observers: [any CoreAgentMemoryObserver]
+  private var indexRepairTasks: [UUID: Task<Void, Never>] = [:]
 
   init(
     scope: CoreAgentMemoryScope,
@@ -506,7 +508,7 @@ actor CoreAgentMemoryRuntime {
       try await store.save(updated)
       await emit(.init(kind: .indexingRepaired, scope: scope, recordID: record.id))
     } catch {
-      updated.indexState = .failed
+      updated.indexState = .pending
       updated.updatedAt = Date()
       try? await store.save(updated)
       await emit(
@@ -517,6 +519,7 @@ actor CoreAgentMemoryRuntime {
           attributes: ["error_type": String(reflecting: Swift.type(of: error))]
         )
       )
+      scheduleIndexRepair(recordID: record.id)
     }
     return updated
   }
@@ -606,6 +609,7 @@ actor CoreAgentMemoryRuntime {
   }
 
   func removeDerivative(id: UUID) async {
+    indexRepairTasks.removeValue(forKey: id)?.cancel()
     guard let index else { return }
     do {
       try await index.remove(id: id, in: scope)
@@ -625,6 +629,8 @@ actor CoreAgentMemoryRuntime {
   }
 
   func removeAllDerivatives() async {
+    for task in indexRepairTasks.values { task.cancel() }
+    indexRepairTasks.removeAll()
     guard let index else { return }
     do {
       try await index.removeAll(in: scope)
@@ -644,6 +650,8 @@ actor CoreAgentMemoryRuntime {
 
   func rebuildIndex() async throws {
     guard let index else { return }
+    for task in indexRepairTasks.values { task.cancel() }
+    indexRepairTasks.removeAll()
     try await index.removeAll(in: scope)
     let now = Date()
     for record in try await store.records(in: scope)
@@ -670,6 +678,76 @@ actor CoreAgentMemoryRuntime {
     for observer in observers {
       await observer.memoryDidEmit(event)
     }
+  }
+
+  func flushIndexRepairs() async {
+    while !indexRepairTasks.isEmpty {
+      let tasks = Array(indexRepairTasks.values)
+      for task in tasks { await task.value }
+    }
+  }
+
+  private func scheduleIndexRepair(recordID: UUID) {
+    guard index != nil, indexRepairTasks[recordID] == nil else { return }
+    indexRepairTasks[recordID] = Task { [weak self] in
+      guard let self else { return }
+      for attempt in 1...3 {
+        if attempt > 1 {
+          try? await Task.sleep(for: .milliseconds(250 * attempt))
+        }
+        guard !Task.isCancelled else { break }
+        if await self.repairIndex(recordID: recordID, attempt: attempt) { break }
+      }
+      await self.finishIndexRepair(recordID: recordID)
+    }
+  }
+
+  private func repairIndex(recordID: UUID, attempt: Int) async -> Bool {
+    guard let index else { return true }
+    do {
+      guard let record = try await store.record(id: recordID, in: scope),
+        record.status == .active,
+        record.isValid(at: Date())
+      else {
+        return true
+      }
+      try await index.upsert(record)
+      if Task.isCancelled {
+        try? await index.remove(id: recordID, in: scope)
+        return true
+      }
+      try await store.updateIndexState(.indexed, for: recordID, in: scope)
+      await emit(
+        .init(
+          kind: .indexingRepaired,
+          scope: scope,
+          recordID: recordID,
+          attributes: ["attempt": String(attempt)]
+        )
+      )
+      return true
+    } catch {
+      if attempt == 3 {
+        try? await store.updateIndexState(.failed, for: recordID, in: scope)
+      }
+      await emit(
+        .init(
+          kind: .indexingFailed,
+          scope: scope,
+          recordID: recordID,
+          attributes: [
+            "attempt": String(attempt),
+            "terminal": String(attempt == 3),
+            "error_type": String(reflecting: Swift.type(of: error)),
+          ]
+        )
+      )
+      return false
+    }
+  }
+
+  private func finishIndexRepair(recordID: UUID) {
+    indexRepairTasks.removeValue(forKey: recordID)
   }
 
   private func merge(

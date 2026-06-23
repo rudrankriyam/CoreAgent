@@ -16,13 +16,16 @@ public enum CoreAgentPluginFailurePolicy: Sendable {
 public struct CoreAgentPluginFailurePolicies: Sendable {
   public var preparation: CoreAgentPluginFailurePolicy
   public var completion: CoreAgentPluginFailurePolicy
+  public var sanitization: CoreAgentPluginFailurePolicy
 
   public init(
     preparation: CoreAgentPluginFailurePolicy = .recordAndContinue,
-    completion: CoreAgentPluginFailurePolicy = .recordAndContinue
+    completion: CoreAgentPluginFailurePolicy = .recordAndContinue,
+    sanitization: CoreAgentPluginFailurePolicy = .failRun
   ) {
     self.preparation = preparation
     self.completion = completion
+    self.sanitization = sanitization
   }
 
   public static let `default` = CoreAgentPluginFailurePolicies()

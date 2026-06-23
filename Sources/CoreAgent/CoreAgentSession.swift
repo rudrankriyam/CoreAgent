@@ -453,6 +453,7 @@ public actor CoreAgentSession {
     try acquireSessionLease()
     defer { releaseSessionLease() }
     let session = try await resolveSession()
+    let transcriptBeforeRun = session.transcript
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models run started.")
@@ -476,15 +477,16 @@ public actor CoreAgentSession {
       )
       completedModelResponse = true
       let usage = CoreAgentUsage(nativeResponse.usage)
-      let sanitizedTranscript = try sanitizePluginContext(
-        in: session.transcript,
-        contextBlocks: pluginContext.contextBlocks,
-        requiresMatch: !pluginContext.contextBlocks.isEmpty
+      let sanitizedTranscript = try await sanitizeCompletedTranscript(
+        session.transcript,
+        fallback: transcriptBeforeRun,
+        context: pluginContext,
+        runID: runID
       )
       let sanitizedEntries = try sanitizePluginContext(
         in: Array(nativeResponse.transcriptEntries),
         contextBlocks: pluginContext.contextBlocks,
-        requiresMatch: !pluginContext.contextBlocks.isEmpty
+        requiresMatch: false
       )
       installSession(transcript: sanitizedTranscript, ifNeededFor: pluginContext)
       if !recordsProfileToolLifecycle {
@@ -524,15 +526,19 @@ public actor CoreAgentSession {
         run: run
       )
     } catch {
-      if configuration.savesTranscriptAfterFailedResponse, !completedModelResponse {
-        let sanitized =
-          (try? sanitizePluginContext(
-            in: session.transcript,
-            contextBlocks: pluginContext.contextBlocks,
-            requiresMatch: false
-          )) ?? session.transcript
+      if !pluginContext.contextBlocks.isEmpty {
+        let sanitized = await sanitizeFailedTranscript(
+          session.transcript,
+          fallback: transcriptBeforeRun,
+          context: pluginContext,
+          runID: runID
+        )
         installSession(transcript: sanitized, ifNeededFor: pluginContext)
-        await persistAfterFailedResponse(transcript: sanitized, runID: runID)
+        if configuration.savesTranscriptAfterFailedResponse {
+          await persistAfterFailedResponse(transcript: sanitized, runID: runID)
+        }
+      } else if configuration.savesTranscriptAfterFailedResponse, !completedModelResponse {
+        await persistAfterFailedResponse(transcript: session.transcript, runID: runID)
       }
       await failPlugins(
         CoreAgentPluginFailure(
@@ -622,6 +628,7 @@ public actor CoreAgentSession {
     try acquireSessionLease()
     defer { releaseSessionLease() }
     let session = try await resolveSession()
+    let transcriptBeforeRun = session.transcript
     let runID = UUID()
     let startedAt = Date()
     await recorder.begin(runID: runID, message: "Foundation Models streaming run started.")
@@ -647,15 +654,16 @@ public actor CoreAgentSession {
       completedModelResponse = true
       let content = try Content(lastSnapshot.rawContent)
       let usage = CoreAgentUsage(lastSnapshot.usage)
-      let sanitizedTranscript = try sanitizePluginContext(
-        in: session.transcript,
-        contextBlocks: pluginContext.contextBlocks,
-        requiresMatch: !pluginContext.contextBlocks.isEmpty
+      let sanitizedTranscript = try await sanitizeCompletedTranscript(
+        session.transcript,
+        fallback: transcriptBeforeRun,
+        context: pluginContext,
+        runID: runID
       )
       let sanitizedEntries = try sanitizePluginContext(
         in: Array(lastSnapshot.transcriptEntries),
         contextBlocks: pluginContext.contextBlocks,
-        requiresMatch: !pluginContext.contextBlocks.isEmpty
+        requiresMatch: false
       )
       installSession(transcript: sanitizedTranscript, ifNeededFor: pluginContext)
       if !recordsProfileToolLifecycle {
@@ -695,15 +703,19 @@ public actor CoreAgentSession {
         run: run
       )
     } catch {
-      if configuration.savesTranscriptAfterFailedResponse, !completedModelResponse {
-        let sanitized =
-          (try? sanitizePluginContext(
-            in: session.transcript,
-            contextBlocks: pluginContext.contextBlocks,
-            requiresMatch: false
-          )) ?? session.transcript
+      if !pluginContext.contextBlocks.isEmpty {
+        let sanitized = await sanitizeFailedTranscript(
+          session.transcript,
+          fallback: transcriptBeforeRun,
+          context: pluginContext,
+          runID: runID
+        )
         installSession(transcript: sanitized, ifNeededFor: pluginContext)
-        await persistAfterFailedResponse(transcript: sanitized, runID: runID)
+        if configuration.savesTranscriptAfterFailedResponse {
+          await persistAfterFailedResponse(transcript: sanitized, runID: runID)
+        }
+      } else if configuration.savesTranscriptAfterFailedResponse, !completedModelResponse {
+        await persistAfterFailedResponse(transcript: session.transcript, runID: runID)
       }
       await failPlugins(
         CoreAgentPluginFailure(
@@ -805,6 +817,7 @@ public actor CoreAgentSession {
     metadata: CoreAgentRequestMetadata
   ) async throws -> PreparedPluginContext {
     var blocks: [CoreAgentContextBlock] = []
+    var sanitizationFailurePolicy = CoreAgentPluginFailurePolicy.recordAndContinue
 
     for plugin in plugins {
       await recorder.record(
@@ -827,6 +840,11 @@ public actor CoreAgentSession {
           throw CoreAgentError.pluginContextUnsupportedForDynamicProfile
         }
         blocks.append(contentsOf: preparation.contextBlocks)
+        if !preparation.contextBlocks.isEmpty,
+          case .failRun = plugin.failurePolicies.sanitization
+        {
+          sanitizationFailurePolicy = .failRun
+        }
         for block in preparation.contextBlocks {
           await recorder.record(
             runID: runID,
@@ -865,7 +883,10 @@ public actor CoreAgentSession {
       }
     }
 
-    return PreparedPluginContext(contextBlocks: blocks)
+    return PreparedPluginContext(
+      contextBlocks: blocks,
+      sanitizationFailurePolicy: sanitizationFailurePolicy
+    )
   }
 
   private func completePlugins(_ completion: CoreAgentPluginCompletion) async throws {
@@ -997,6 +1018,63 @@ public actor CoreAgentSession {
       throw CoreAgentError.pluginContextSanitizationFailed
     }
     return entries
+  }
+
+  private func sanitizeCompletedTranscript(
+    _ transcript: Transcript,
+    fallback: Transcript,
+    context: PreparedPluginContext,
+    runID: UUID
+  ) async throws -> Transcript {
+    do {
+      return try sanitizePluginContext(
+        in: transcript,
+        contextBlocks: context.contextBlocks,
+        requiresMatch: !context.contextBlocks.isEmpty
+      )
+    } catch {
+      await recordSanitizationFailure(error, context: context, runID: runID)
+      if case .failRun = context.sanitizationFailurePolicy {
+        throw error
+      }
+      return fallback
+    }
+  }
+
+  private func sanitizeFailedTranscript(
+    _ transcript: Transcript,
+    fallback: Transcript,
+    context: PreparedPluginContext,
+    runID: UUID
+  ) async -> Transcript {
+    do {
+      return try sanitizePluginContext(
+        in: transcript,
+        contextBlocks: context.contextBlocks,
+        requiresMatch: !context.contextBlocks.isEmpty
+      )
+    } catch {
+      await recordSanitizationFailure(error, context: context, runID: runID)
+      return fallback
+    }
+  }
+
+  private func recordSanitizationFailure(
+    _ error: any Error,
+    context: PreparedPluginContext,
+    runID: UUID
+  ) async {
+    await recorder.record(
+      runID: runID,
+      kind: .pluginEvent,
+      message: "CoreAgent could not verify injected context during transcript sanitization.",
+      attributes: [
+        "plugin_event": "context_sanitization_failed",
+        "context_block_ids": context.contextBlocks.map(\.id).joined(separator: ","),
+        "error_type": String(reflecting: Swift.type(of: error)),
+        "history_reverted": "true",
+      ]
+    )
   }
 
   private func installSession(
@@ -1204,8 +1282,12 @@ public actor CoreAgentSession {
 
 private struct PreparedPluginContext: Sendable {
   let contextBlocks: [CoreAgentContextBlock]
+  let sanitizationFailurePolicy: CoreAgentPluginFailurePolicy
 
-  static let empty = PreparedPluginContext(contextBlocks: [])
+  static let empty = PreparedPluginContext(
+    contextBlocks: [],
+    sanitizationFailurePolicy: .recordAndContinue
+  )
 }
 
 private final class NativeResponseBox<Content: Generable>: @unchecked Sendable {
