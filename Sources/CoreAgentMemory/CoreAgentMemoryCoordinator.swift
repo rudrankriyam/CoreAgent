@@ -13,7 +13,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   private let store: any CoreAgentMemoryStore
   private let runtime: CoreAgentMemoryRuntime
   private let consolidator: (any CoreAgentMemoryConsolidator)?
-  private let approvalProvider: any CoreAgentMemoryApprovalProvider
+  private let consolidationWorker: CoreAgentMemoryConsolidationWorker?
 
   public init(
     scope: CoreAgentMemoryScope,
@@ -40,8 +40,20 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     self.runtime = runtime
     self.searchTool = CoreAgentMemorySearchTool(runtime: runtime)
     self.consolidator = consolidator
-    self.approvalProvider = approvalProvider
     self.failurePolicies = failurePolicies
+    if let consolidator {
+      let worker = CoreAgentMemoryConsolidationWorker(
+        scope: scope,
+        store: store,
+        consolidator: consolidator,
+        approvalProvider: approvalProvider,
+        runtime: runtime
+      )
+      self.consolidationWorker = worker
+      Task { await worker.resume() }
+    } else {
+      self.consolidationWorker = nil
+    }
   }
 
   public func prepare(for request: CoreAgentPluginRequest) async throws
@@ -114,6 +126,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     await runtime.emit(
       .init(kind: .episodePersisted, scope: scope, recordID: episode.id)
     )
+    await consolidationWorker?.resume()
     return [
       CoreAgentPluginEvent(
         name: "memory_episode_persisted",
@@ -202,54 +215,11 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
 
   @discardableResult
   public func approve(_ candidateID: UUID) async throws -> CoreAgentMemoryRecord {
-    guard let candidate = try await store.candidate(id: candidateID, in: scope) else {
-      throw CoreAgentMemoryError.candidateNotFound(candidateID)
-    }
-    guard candidate.status == .pending else {
-      throw CoreAgentMemoryError.invalidCandidateDecision
-    }
-    guard let episode = try await store.record(id: candidate.sourceRecordID, in: scope) else {
-      throw CoreAgentMemoryError.recordNotFound(candidate.sourceRecordID)
-    }
-    let draft = candidate.draft
-    let record = try CoreAgentMemoryRecord(
-      scope: scope,
-      kind: draft.kind,
-      content: draft.content,
-      source: CoreAgentMemorySource(
-        kind: .conversation,
-        runID: episode.source.runID,
-        transcriptEntryIDs: episode.source.transcriptEntryIDs,
-        assetReferences: episode.source.assetReferences,
-        metadata: ["candidate_id": candidate.id.uuidString.lowercased()]
-      ),
-      observedAt: episode.observedAt,
-      validFrom: draft.validFrom,
-      validUntil: draft.validUntil,
-      authority: draft.authority,
-      confidence: draft.confidence,
-      importance: draft.importance,
-      sensitivity: draft.sensitivity,
-      indexState: runtime.hasIndex ? .pending : .notConfigured
-    )
-    try await store.approveCandidate(id: candidateID, as: record, in: scope)
-    let indexed = await runtime.indexAfterCanonicalWrite(record)
-    await runtime.emit(
-      .init(
-        kind: .candidateApproved,
-        scope: scope,
-        recordID: indexed.id,
-        candidateID: candidateID
-      )
-    )
-    return indexed
+    try await runtime.approve(candidateID)
   }
 
   public func reject(_ candidateID: UUID, reason: String? = nil) async throws {
-    try await store.rejectCandidate(id: candidateID, in: scope, reason: reason)
-    await runtime.emit(
-      .init(kind: .candidateRejected, scope: scope, candidateID: candidateID)
-    )
+    try await runtime.reject(candidateID, reason: reason)
   }
 
   public func search(
@@ -265,6 +235,18 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
 
   public func consolidationFailures() async throws -> [CoreAgentMemoryConsolidationJob] {
     try await store.consolidationJobs(in: scope, statuses: [.failed])
+  }
+
+  public func retryFailedConsolidation() async throws {
+    try await consolidationWorker?.retryFailed()
+  }
+
+  public func resumeConsolidation() async {
+    await consolidationWorker?.resume()
+  }
+
+  public func flush() async {
+    await consolidationWorker?.flush()
   }
 
   public func forget(_ id: UUID, reason: String? = nil) async throws {
@@ -421,6 +403,55 @@ actor CoreAgentMemoryRuntime {
   func persist(_ record: CoreAgentMemoryRecord) async throws -> CoreAgentMemoryRecord {
     try await store.save(record)
     return await indexAfterCanonicalWrite(record)
+  }
+
+  func approve(_ candidateID: UUID) async throws -> CoreAgentMemoryRecord {
+    guard let candidate = try await store.candidate(id: candidateID, in: scope) else {
+      throw CoreAgentMemoryError.candidateNotFound(candidateID)
+    }
+    guard candidate.status == .pending else {
+      throw CoreAgentMemoryError.invalidCandidateDecision
+    }
+    guard let episode = try await store.record(id: candidate.sourceRecordID, in: scope) else {
+      throw CoreAgentMemoryError.recordNotFound(candidate.sourceRecordID)
+    }
+    let draft = candidate.draft
+    let record = try CoreAgentMemoryRecord(
+      scope: scope,
+      kind: draft.kind,
+      content: draft.content,
+      source: CoreAgentMemorySource(
+        kind: .conversation,
+        runID: episode.source.runID,
+        transcriptEntryIDs: episode.source.transcriptEntryIDs,
+        assetReferences: episode.source.assetReferences,
+        metadata: ["candidate_id": candidate.id.uuidString.lowercased()]
+      ),
+      observedAt: episode.observedAt,
+      validFrom: draft.validFrom,
+      validUntil: draft.validUntil,
+      authority: draft.authority,
+      confidence: draft.confidence,
+      importance: draft.importance,
+      sensitivity: draft.sensitivity,
+      indexState: hasIndex ? .pending : .notConfigured
+    )
+    try await store.approveCandidate(id: candidateID, as: record, in: scope)
+    let indexed = await indexAfterCanonicalWrite(record)
+    await emit(
+      .init(
+        kind: .candidateApproved,
+        scope: scope,
+        recordID: indexed.id,
+        candidateID: candidateID
+      )
+    )
+    return indexed
+  }
+
+  func reject(_ candidateID: UUID, reason: String?) async throws {
+    try await store.rejectCandidate(id: candidateID, in: scope, reason: reason)
+    await emit(.init(kind: .candidateRejected, scope: scope, candidateID: candidateID))
   }
 
   func indexAfterCanonicalWrite(
