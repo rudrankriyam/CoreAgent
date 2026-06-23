@@ -22,6 +22,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func save(_ record: CoreAgentMemoryRecord) throws {
     try ensureScope(storedRecords[record.id]?.scope, equals: record.scope)
+    try ensureLinkedRecordScopes(record)
     storedRecords[record.id] = record
   }
 
@@ -30,6 +31,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     enqueueing job: CoreAgentMemoryConsolidationJob?
   ) throws {
     try ensureScope(storedRecords[episode.id]?.scope, equals: episode.scope)
+    try ensureLinkedRecordScopes(episode)
     if let job {
       try ensureScope(storedJobs[job.id]?.scope, equals: job.scope)
       guard job.scope == episode.scope else { throw CoreAgentMemoryError.scopeMismatch }
@@ -43,16 +45,21 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     superseding recordIDs: [UUID]
   ) throws {
     try ensureScope(storedRecords[correction.id]?.scope, equals: correction.scope)
+    var existingRecords: [CoreAgentMemoryRecord] = []
     for id in recordIDs {
-      guard var existing = storedRecords[id], existing.scope == correction.scope else {
+      guard let existing = storedRecords[id], existing.scope == correction.scope else {
         throw CoreAgentMemoryError.recordNotFound(id)
       }
+      existingRecords.append(existing)
+    }
+    try ensureLinkedRecordScopes(correction)
+    storedRecords[correction.id] = correction
+    for var existing in existingRecords {
       existing.status = .superseded
       existing.supersededBy = correction.id
       existing.updatedAt = Date()
-      storedRecords[id] = existing
+      storedRecords[existing.id] = existing
     }
-    storedRecords[correction.id] = correction
   }
 
   public func record(id: UUID, in scope: CoreAgentMemoryScope) -> CoreAgentMemoryRecord? {
@@ -129,6 +136,15 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func purge(id: UUID, in scope: CoreAgentMemoryScope) {
     guard storedRecords[id]?.scope == scope || storedTombstones[id]?.scope == scope else { return }
+    for (linkedID, var linked) in Array(storedRecords) where linked.scope == scope {
+      let previousCount = linked.supersedes.count
+      linked.supersedes.removeAll { $0 == id }
+      if linked.supersededBy == id { linked.supersededBy = nil }
+      if linked.supersedes.count != previousCount || storedRecords[linkedID]?.supersededBy == id {
+        linked.updatedAt = Date()
+        storedRecords[linkedID] = linked
+      }
+    }
     storedRecords.removeValue(forKey: id)
     storedTombstones.removeValue(forKey: id)
     storedCandidates = storedCandidates.filter {
@@ -175,6 +191,8 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     in scope: CoreAgentMemoryScope
   ) throws {
     guard record.scope == scope else { throw CoreAgentMemoryError.scopeMismatch }
+    try ensureScope(storedRecords[record.id]?.scope, equals: record.scope)
+    try ensureLinkedRecordScopes(record)
     guard var candidate = storedCandidates[id], candidate.scope == scope else {
       throw CoreAgentMemoryError.candidateNotFound(id)
     }
@@ -256,6 +274,19 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     equals proposed: CoreAgentMemoryScope
   ) throws {
     guard existing == nil || existing == proposed else {
+      throw CoreAgentMemoryError.scopeMismatch
+    }
+  }
+
+  private func ensureLinkedRecordScopes(_ record: CoreAgentMemoryRecord) throws {
+    for id in record.supersedes {
+      guard storedRecords[id]?.scope == record.scope else {
+        throw CoreAgentMemoryError.scopeMismatch
+      }
+    }
+    if let id = record.supersededBy,
+      storedRecords[id]?.scope != record.scope
+    {
       throw CoreAgentMemoryError.scopeMismatch
     }
   }

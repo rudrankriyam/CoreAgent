@@ -11,12 +11,21 @@ private enum TestMemoryError: Error {
 private actor TestMemoryIndex: CoreAgentMemoryIndex {
   private var records: [UUID: CoreAgentMemoryRecord] = [:]
   private var failsRemoval = false
+  private var upsertFailuresRemaining = 0
 
   func setFailsRemoval(_ value: Bool) {
     failsRemoval = value
   }
 
-  func upsert(_ record: CoreAgentMemoryRecord) {
+  func setUpsertFailures(_ count: Int) {
+    upsertFailuresRemaining = count
+  }
+
+  func upsert(_ record: CoreAgentMemoryRecord) throws {
+    if upsertFailuresRemaining > 0 {
+      upsertFailuresRemaining -= 1
+      throw TestMemoryError.intentional
+    }
     records[record.id] = record
   }
 
@@ -201,6 +210,29 @@ struct CoreAgentMemoryTests {
     #expect(await store.tombstone(id: visible.id, in: scope) != nil)
   }
 
+  @Test("A failed optional-index write stays canonical and repairs asynchronously")
+  func indexRepair() async throws {
+    let scope = try makeScope()
+    let store = InMemoryCoreAgentMemoryStore()
+    let index = TestMemoryIndex()
+    await index.setUpsertFailures(1)
+    let coordinator = CoreAgentMemoryCoordinator(
+      scope: scope,
+      store: store,
+      disclosurePolicy: .init(destination: .onDevice),
+      index: index
+    )
+
+    let record = try await coordinator.remember("repairable quasar record")
+    #expect(record.status == .active)
+    #expect(record.indexState == .pending)
+
+    await coordinator.flush()
+
+    #expect(await store.record(id: record.id, in: scope)?.indexState == .indexed)
+    #expect(try await coordinator.search("quasar").map(\.id) == [record.id])
+  }
+
   @Test("Corrections append provenance and supersede rather than overwrite")
   func correctionAuthority() async throws {
     let scope = try makeScope()
@@ -226,6 +258,9 @@ struct CoreAgentMemoryTests {
     #expect(correction.authority == .explicitUserCorrection)
     #expect(try await coordinator.search("green").map(\.id) == [correction.id])
     #expect(try await coordinator.search("blue").isEmpty)
+
+    try await coordinator.purge(original.id)
+    #expect(await store.record(id: correction.id, in: scope)?.supersedes.isEmpty == true)
   }
 
   @Test("Context packing is bounded, delimited, and records source identifiers")
@@ -258,6 +293,41 @@ struct CoreAgentMemoryTests {
     #expect(block.content.contains("contentTruncated"))
     #expect(block.content.hasSuffix("END_COREAGENT_UNTRUSTED_MEMORY_EVIDENCE"))
     #expect(preparation.events.first?.attributes["record_id"] != nil)
+  }
+
+  @Test("Rich prompts require a query and dynamic profiles never receive injected context")
+  func contextQueryBoundaries() async throws {
+    let scope = try makeScope()
+    let coordinator = CoreAgentMemoryCoordinator(
+      scope: scope,
+      store: InMemoryCoreAgentMemoryStore(),
+      disclosurePolicy: .init(destination: .onDevice)
+    )
+    _ = try await coordinator.remember("A remembered comet preference.")
+    let runID = UUID()
+
+    let withoutQuery = try await coordinator.prepare(
+      for: .init(
+        runID: runID,
+        prompt: Prompt("Rich prompt"),
+        contextQuery: nil,
+        metadata: [:],
+        mode: .explicitModel
+      )
+    )
+    let dynamicProfile = try await coordinator.prepare(
+      for: .init(
+        runID: runID,
+        prompt: Prompt("Rich prompt"),
+        contextQuery: "comet",
+        metadata: [:],
+        mode: .dynamicProfile
+      )
+    )
+
+    #expect(withoutQuery.contextBlocks.isEmpty)
+    #expect(dynamicProfile.contextBlocks.isEmpty)
+    #expect(coordinator.searchTool.name == "coreagent_search_memory")
   }
 
   @Test("Durable consolidation resumes, retries three times, and exposes terminal failure")

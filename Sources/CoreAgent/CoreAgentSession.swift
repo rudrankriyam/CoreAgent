@@ -361,6 +361,25 @@ public actor CoreAgentSession {
   }
 
   @discardableResult
+  public func respond(
+    to prompt: String,
+    schema: GenerationSchema,
+    options: GenerationOptions = GenerationOptions(),
+    contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
+    metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil
+  ) async throws -> CoreAgentResponse<GeneratedContent> {
+    try await respond(
+      to: Prompt(prompt),
+      schema: schema,
+      options: options,
+      contextOptions: contextOptions,
+      metadata: metadata,
+      contextQuery: contextQuery ?? prompt
+    )
+  }
+
+  @discardableResult
   public func respondStreaming(
     to prompt: Prompt,
     options: GenerationOptions = GenerationOptions(),
@@ -383,6 +402,25 @@ public actor CoreAgentSession {
     } onPartialResponse: { content, _ in
       await onPartialResponse(content)
     }
+  }
+
+  @discardableResult
+  public func respondStreaming(
+    to prompt: String,
+    options: GenerationOptions = GenerationOptions(),
+    contextOptions: ContextOptions = ContextOptions(),
+    metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil,
+    onPartialResponse: @escaping @Sendable (String) async -> Void
+  ) async throws -> CoreAgentResponse<String> {
+    try await respondStreaming(
+      to: Prompt(prompt),
+      options: options,
+      contextOptions: contextOptions,
+      metadata: metadata,
+      contextQuery: contextQuery ?? prompt,
+      onPartialResponse: onPartialResponse
+    )
   }
 
   @discardableResult
@@ -410,6 +448,27 @@ public actor CoreAgentSession {
     } onPartialResponse: { content, _ in
       await onPartialResponse(content)
     }
+  }
+
+  @discardableResult
+  public func respondStreaming<Content: Generable & Sendable>(
+    to prompt: String,
+    generating type: Content.Type = Content.self,
+    options: GenerationOptions = GenerationOptions(),
+    contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
+    metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil,
+    onPartialResponse: @escaping @Sendable (Content.PartiallyGenerated) async -> Void
+  ) async throws -> CoreAgentResponse<Content> where Content.PartiallyGenerated: Sendable {
+    try await respondStreaming(
+      to: Prompt(prompt),
+      generating: type,
+      options: options,
+      contextOptions: contextOptions,
+      metadata: metadata,
+      contextQuery: contextQuery ?? prompt,
+      onPartialResponse: onPartialResponse
+    )
   }
 
   private func resolveSession() async throws -> LanguageModelSession {

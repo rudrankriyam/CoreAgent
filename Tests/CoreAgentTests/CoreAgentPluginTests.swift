@@ -185,13 +185,13 @@ struct CoreAgentPluginTests {
     )
 
     let response = try await session.respondStreaming(
-      to: Prompt("Greet me"),
-      contextQuery: "greeting"
+      to: "Greet me"
     ) { _ in }
 
     #expect(response.content == "hello")
     #expect(await probe.preparationCount == 1)
     #expect(await probe.completionCount == 1)
+    #expect(await probe.requests.first?.contextQuery == "Greet me")
     #expect(!promptText(in: try await session.transcript()).contains("Context"))
   }
 

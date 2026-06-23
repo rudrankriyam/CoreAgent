@@ -76,16 +76,20 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     superseding recordIDs: [UUID]
   ) throws {
     try transaction {
+      var existingRecords: [CoreAgentMemoryRecord] = []
       for id in recordIDs {
-        guard var existing = try fetchRecord(id: id, scope: correction.scope) else {
+        guard let existing = try fetchRecord(id: id, scope: correction.scope) else {
           throw CoreAgentMemoryError.recordNotFound(id)
         }
+        existingRecords.append(existing)
+      }
+      try saveRecord(correction)
+      for var existing in existingRecords {
         existing.status = .superseded
         existing.supersededBy = correction.id
         existing.updatedAt = Date()
         try saveRecord(existing)
       }
-      try saveRecord(correction)
     }
     try refreshFilePolicies()
   }
@@ -219,6 +223,19 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func purge(id: UUID, in scope: CoreAgentMemoryScope) throws {
     try transaction {
+      guard try fetchRecord(id: id, scope: scope) != nil else { return }
+      for var linked in try records(in: scope) where linked.id != id {
+        let previousSupersedes = linked.supersedes
+        let previousSupersededBy = linked.supersededBy
+        linked.supersedes.removeAll { $0 == id }
+        if linked.supersededBy == id { linked.supersededBy = nil }
+        if linked.supersedes != previousSupersedes
+          || linked.supersededBy != previousSupersededBy
+        {
+          linked.updatedAt = Date()
+          try saveRecord(linked)
+        }
+      }
       let fts = try prepare(
         """
         DELETE FROM memory_fts WHERE record_id IN (
@@ -453,6 +470,16 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   private func saveRecord(_ record: CoreAgentMemoryRecord) throws {
     try ensureScope(for: record.id, table: "memory_records", equals: record.scope)
+    for linkedID in record.supersedes {
+      guard try fetchRecord(id: linkedID, scope: record.scope) != nil else {
+        throw CoreAgentMemoryError.scopeMismatch
+      }
+    }
+    if let linkedID = record.supersededBy,
+      try fetchRecord(id: linkedID, scope: record.scope) == nil
+    {
+      throw CoreAgentMemoryError.scopeMismatch
+    }
     let statement = try prepare(
       """
       INSERT INTO memory_records (
