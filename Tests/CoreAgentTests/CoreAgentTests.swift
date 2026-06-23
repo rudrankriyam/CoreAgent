@@ -27,6 +27,18 @@ private struct TestAnswer: Sendable {
   }
 #endif
 
+#if COREAGENT_CLAUDE
+  @Suite("Claude provider smoke tests")
+  struct ClaudeProviderTests {
+    @Test("Constructs the first-party Claude provider without sending a request")
+    func constructionOnly() throws {
+      let model = CoreAgentProviderModels.claude(auth: .apiKey("unused-placeholder"))
+      _ = try CoreAgentSession(model: model)
+      #expect(CoreAgentProviderFeatures.claude)
+    }
+  }
+#endif
+
 @Generable
 private struct EchoArguments: Sendable {
   let value: String

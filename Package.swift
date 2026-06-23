@@ -19,13 +19,21 @@ let package = Package(
       name: "AppleUtilities",
       description:
         "Enable Apple's FoundationModelsUtilities provider, including OpenAI-compatible Chat Completions."
-    )
+    ),
+    .trait(
+      name: "Claude",
+      description: "Enable Anthropic's ClaudeForFoundationModels provider."
+    ),
   ],
   dependencies: [
     .package(
       url: "https://github.com/apple/foundation-models-utilities.git",
       revision: "a047a503b8ec79a76aa0e83d5a3bac54493cc7e5"
-    )
+    ),
+    .package(
+      url: "https://github.com/anthropics/ClaudeForFoundationModels.git",
+      exact: "0.1.2"
+    ),
   ],
   targets: [
     .target(name: "CoreAgent"),
@@ -42,16 +50,23 @@ let package = Package(
           package: "foundation-models-utilities",
           condition: .when(traits: ["AppleUtilities"])
         ),
+        .product(
+          name: "ClaudeForFoundationModels",
+          package: "ClaudeForFoundationModels",
+          condition: .when(traits: ["Claude"])
+        ),
       ],
       swiftSettings: [
-        .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"]))
+        .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"])),
+        .define("COREAGENT_CLAUDE", .when(traits: ["Claude"])),
       ]
     ),
     .testTarget(
       name: "CoreAgentTests",
       dependencies: ["CoreAgent", "CoreAgentTestSupport", "CoreAgentProviders"],
       swiftSettings: [
-        .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"]))
+        .define("COREAGENT_APPLE_UTILITIES", .when(traits: ["AppleUtilities"])),
+        .define("COREAGENT_CLAUDE", .when(traits: ["Claude"])),
       ]
     ),
   ]
