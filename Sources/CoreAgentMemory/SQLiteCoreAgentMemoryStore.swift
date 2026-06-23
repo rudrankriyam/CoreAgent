@@ -1040,7 +1040,7 @@ private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self
 extension JSONEncoder {
   fileprivate static var coreAgentMemory: JSONEncoder {
     let encoder = JSONEncoder()
-    encoder.dateEncodingStrategy = .millisecondsSince1970
+    encoder.dateEncodingStrategy = .deferredToDate
     encoder.outputFormatting = [.sortedKeys]
     return encoder
   }
@@ -1049,7 +1049,7 @@ extension JSONEncoder {
 extension JSONDecoder {
   fileprivate static var coreAgentMemory: JSONDecoder {
     let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .millisecondsSince1970
+    decoder.dateDecodingStrategy = .deferredToDate
     return decoder
   }
 }

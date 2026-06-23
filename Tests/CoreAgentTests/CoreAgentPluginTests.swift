@@ -165,6 +165,9 @@ struct CoreAgentPluginTests {
       )
     )
     #expect(
+      promptText(in: completion.transcriptEntries).contains("What is my preferred color?")
+    )
+    #expect(
       response.run.events.contains {
         $0.kind == .pluginEvent && $0.attributes["context_block_id"] == "memory-record-1"
       }

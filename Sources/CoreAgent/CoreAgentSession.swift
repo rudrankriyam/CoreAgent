@@ -542,10 +542,9 @@ public actor CoreAgentSession {
         context: pluginContext,
         runID: runID
       )
-      let sanitizedEntries = try sanitizePluginContext(
-        in: Array(nativeResponse.transcriptEntries),
-        contextBlocks: pluginContext.contextBlocks,
-        requiresMatch: false
+      let runTranscriptEntries = transcriptEntries(
+        addedTo: sanitizedTranscript,
+        after: transcriptBeforeRun
       )
       installSession(transcript: sanitizedTranscript, ifNeededFor: pluginContext)
       if !recordsProfileToolLifecycle {
@@ -568,7 +567,7 @@ public actor CoreAgentSession {
           contextQuery: contextQuery,
           metadata: metadata,
           rawContent: nativeResponse.rawContent,
-          transcriptEntries: sanitizedEntries,
+          transcriptEntries: runTranscriptEntries,
           usage: usage,
           mode: sessionMode
         )
@@ -719,10 +718,9 @@ public actor CoreAgentSession {
         context: pluginContext,
         runID: runID
       )
-      let sanitizedEntries = try sanitizePluginContext(
-        in: Array(lastSnapshot.transcriptEntries),
-        contextBlocks: pluginContext.contextBlocks,
-        requiresMatch: false
+      let runTranscriptEntries = transcriptEntries(
+        addedTo: sanitizedTranscript,
+        after: transcriptBeforeRun
       )
       installSession(transcript: sanitizedTranscript, ifNeededFor: pluginContext)
       if !recordsProfileToolLifecycle {
@@ -745,7 +743,7 @@ public actor CoreAgentSession {
           contextQuery: contextQuery,
           metadata: metadata,
           rawContent: lastSnapshot.rawContent,
-          transcriptEntries: sanitizedEntries,
+          transcriptEntries: runTranscriptEntries,
           usage: usage,
           mode: sessionMode
         )
@@ -1037,6 +1035,16 @@ public actor CoreAgentSession {
     var transcript = Transcript()
     transcript.append(contentsOf: sanitized)
     return transcript
+  }
+
+  private func transcriptEntries(
+    addedTo transcript: Transcript,
+    after previousTranscript: Transcript
+  ) -> [Transcript.Entry] {
+    let entries = Array(transcript)
+    let previousEntryCount = Array(previousTranscript).count
+    guard entries.count >= previousEntryCount else { return entries }
+    return Array(entries.dropFirst(previousEntryCount))
   }
 
   private func sanitizePluginContext(
