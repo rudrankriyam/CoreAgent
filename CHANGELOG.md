@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 - Unreleased
+## 0.3.0 - 2026-06-24
 
 - Renamed the Apple utilities helper from `openAICompatible(...)` to
   `chatCompletions(...)` and removed the OpenAI-specific type alias. The helper

@@ -39,7 +39,7 @@ Add CoreAgent with Swift Package Manager:
 dependencies: [
   .package(
     url: "https://github.com/rudrankriyam/CoreAgent.git",
-    from: "0.2.0"
+    from: "0.3.0"
   )
 ]
 ```
@@ -375,7 +375,7 @@ Enable one or more SwiftPM Traits on the CoreAgent dependency:
 ```swift
 .package(
   url: "https://github.com/rudrankriyam/CoreAgent.git",
-  from: "0.2.0",
+  from: "0.3.0",
   traits: ["AppleUtilities", "Claude"]
 )
 ```
