@@ -11,8 +11,13 @@ let package = Package(
   ],
   products: [
     .library(name: "CoreAgent", targets: ["CoreAgent"]),
+    .library(name: "CoreAgentTestSupport", targets: ["CoreAgentTestSupport"]),
   ],
   targets: [
     .target(name: "CoreAgent"),
+    .target(
+      name: "CoreAgentTestSupport",
+      dependencies: ["CoreAgent"]
+    ),
   ]
 )
