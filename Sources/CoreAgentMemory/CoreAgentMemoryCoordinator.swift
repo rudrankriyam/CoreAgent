@@ -14,6 +14,9 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   private let runtime: CoreAgentMemoryRuntime
   private let consolidator: (any CoreAgentMemoryConsolidator)?
   private let consolidationWorker: CoreAgentMemoryConsolidationWorker?
+  private var consolidationGeneration: UInt64 = 0
+  private var pendingEpisodeCaptures = 0
+  private var episodeCaptureWaiters: [CheckedContinuation<Void, Never>] = []
 
   public init(
     scope: CoreAgentMemoryScope,
@@ -98,6 +101,8 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
     -> [CoreAgentPluginEvent]
   {
     guard let capture = Self.captureEpisode(from: completion) else { return [] }
+    beginEpisodeCapture()
+    defer { finishEpisodeCapture() }
     var episode = try CoreAgentMemoryRecord(
       scope: scope,
       kind: .episode,
@@ -238,6 +243,7 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   }
 
   public func retryFailedConsolidation() async throws {
+    consolidationGeneration &+= 1
     try await consolidationWorker?.retryFailed()
   }
 
@@ -246,8 +252,16 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
   }
 
   public func flush() async {
-    await consolidationWorker?.flush()
-    await runtime.flushIndexRepairs()
+    while true {
+      let generation = consolidationGeneration
+      await waitForEpisodeCaptures()
+      await consolidationWorker?.flush()
+      await runtime.flushIndexRepairs()
+      guard pendingEpisodeCaptures == 0, consolidationGeneration == generation else {
+        continue
+      }
+      return
+    }
   }
 
   public func forget(_ id: UUID, reason: String? = nil) async throws {
@@ -316,6 +330,26 @@ public actor CoreAgentMemoryCoordinator: CoreAgentSessionPlugin {
       exportedAt: exportedAt,
       configuration: configuration
     )
+  }
+
+  private func beginEpisodeCapture() {
+    consolidationGeneration &+= 1
+    pendingEpisodeCaptures += 1
+  }
+
+  private func finishEpisodeCapture() {
+    pendingEpisodeCaptures -= 1
+    guard pendingEpisodeCaptures == 0 else { return }
+    let waiters = episodeCaptureWaiters
+    episodeCaptureWaiters.removeAll()
+    for waiter in waiters { waiter.resume() }
+  }
+
+  private func waitForEpisodeCaptures() async {
+    guard pendingEpisodeCaptures > 0 else { return }
+    await withCheckedContinuation { continuation in
+      episodeCaptureWaiters.append(continuation)
+    }
   }
 
   private static func captureEpisode(
