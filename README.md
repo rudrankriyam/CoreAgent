@@ -1,363 +1,453 @@
 # CoreAgent
 
-A Swift runtime for on-device agents on Apple platforms.
+**Foundation Models makes any model callable. CoreAgent makes any model shippable.**
 
-CoreAgent gives Apple-platform apps a small, inspectable foundation for on-device agents: Swift-native tools, structured memory, approval gates, run traces, receipts, and a Foundation Models backend that stays local to the Apple stack.
+CoreAgent is a production harness for Apple's Foundation Models API. Give it any
+type that conforms to `LanguageModel` and keep using native `Prompt`,
+`Transcript`, `Tool`, `GeneratedContent`, and `Generable` values end to end.
 
-It is built around Apple Foundation Models today and designed to grow with the broader local AI surface across iOS, macOS, and visionOS.
+CoreAgent adds the layer an app still needs around the native session:
 
-## Why CoreAgent
+- approval, allowlist, and trusted-manifest policy before tools execute;
+- per-run tool budgets and cooperative tool/model timeouts;
+- retries for failures your app classifies as safe;
+- versioned, durable native-transcript checkpoints;
+- toolset validation when restoring a checkpoint;
+- ordered run events, observers, usage, and tamper-evident receipts;
+- deterministic, zero-network model fixtures for tests;
+- optional first-party Apple, Anthropic, and Google provider packages.
 
-- **Foundation Models first:** built for Apple's Foundation Models framework on iOS, macOS, and visionOS 27.
-- **Swift-native tools:** describe callable actions with strong metadata, input schemas, output descriptions, and stable manifests.
-- **App-grade governance:** approve, deny, allowlist, or trust tools before anything runs.
-- **Durable memory:** keep conversation history, compact older messages into structured summaries, and persist runs as JSON.
-- **Operational visibility:** export traces and tamper-evident receipts for debugging, QA, audits, and support workflows.
-- **Composable agents:** expose one agent as a tool for another while preserving delegated run reports.
+CoreAgent does **not** define another provider protocol, message format, schema
+tree, tool protocol, or agent loop. Foundation Models owns those primitives.
 
 ## Requirements
 
 - Swift 6.4
-- iOS 27.0+
-- macOS 27.0+
-- visionOS 27.0+
-- Xcode 27 SDKs with `FoundationModels`
+- Xcode 27
+- iOS 27+, macOS 27+, or visionOS 27+
+
+Apple has announced that the Foundation Models core will become open source.
+Until that source and its package manifest ship, CoreAgent makes no iOS 18 or
+Linux compatibility claim.
 
 ## Installation
 
-Add CoreAgent with Swift Package Manager:
+While `0.2.0` is unreleased, depend on `main`:
 
 ```swift
-.package(url: "https://github.com/rudrankriyam/CoreAgent.git", from: "0.1.0")
+dependencies: [
+  .package(
+    url: "https://github.com/rudrankriyam/CoreAgent.git",
+    branch: "main"
+  )
+]
 ```
 
-Then add the products you need to your target:
+Add the main library to your target:
 
 ```swift
-.product(name: "CoreAgent", package: "CoreAgent"),
-.product(name: "CoreAgentFoundationModels", package: "CoreAgent"),
-.product(name: "CoreAgentTools", package: "CoreAgent")
+.product(name: "CoreAgent", package: "CoreAgent")
 ```
 
-## Quick Start
+## Quick start
 
 ```swift
 import CoreAgent
-import CoreAgentFoundationModels
+import FoundationModels
 
-let provider = FoundationModelProvider(
-  instructions: "Answer clearly and use tools when they are useful."
+let agent = try CoreAgentSession(
+  model: SystemLanguageModel.default,
+  instructions: Instructions {
+    "Be concise. Use a tool only when it materially improves the answer."
+  }
 )
 
-let agent = ToolCallingAgent(
-  tools: [],
-  model: provider
-)
-
-let run = try await agent.run("Explain tool calling in one sentence.")
-print(run.finalAnswer)
+let response = try await agent.respond(to: "Explain tool calling in one sentence.")
+print(response.content)
+print(response.usage)
 ```
 
-`ToolCallingAgent` keeps a run loop around `FoundationModelProvider`. The model can either return a final answer or request one or more tool calls, and CoreAgent records each step in memory and events.
+The session is persistent. Foundation Models retains its native transcript and
+CoreAgent returns the typed response, raw generated content, new transcript
+entries, token usage, and audited run.
 
-## Add Tools
+## Xcode 27 dynamic profiles
 
-Tools are plain Swift types that conform to `Tool`, or lightweight closures when that is enough:
+Use the profile-factory initializer when Foundation Models' dynamic profile is
+the composition root. This preserves native dynamic instructions, model
+switching, lifecycle hooks, and utilities such as Skills and history modifiers:
 
 ```swift
-import CoreAgent
+let agent = try CoreAgentSession(
+  checkpointCompatibilityID: "assistant-profile-v1",
+  checkpointStore: store,
+  checkpointKey: "assistant:user-123"
+) {
+  LanguageModelSession.Profile {
+    Instructions("Help the user with the current project.")
+    dynamicTools
+  }
+  .model(model)
+}
+```
 
-let slugify = ClosureTool(
-  name: "slugify",
-  description: "Convert text into a lowercase URL slug.",
-  outputDescription: "A lowercase slug separated by hyphens.",
-  inputs: [
-    "text": ToolInput(
-      type: .string,
-      description: "Text to convert into a slug."
-    )
-  ]
-) { arguments in
-  arguments["text", default: ""]
-    .lowercased()
-    .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-    .joined(separator: "-")
+CoreAgent stores an `@Sendable` factory and calls it again for lazy restore and
+`reset()`. Each returned profile is transferred to Foundation Models with
+`sending`, so the factory may create fresh non-`Sendable` state; state shared
+across profile instances must itself be `Sendable` (as Apple's
+`SkillActivations` is). CoreAgent restores only `Transcript.history`, allowing
+the current profile to rematerialize its instructions, tools, model, and
+modifiers. Change
+`checkpointCompatibilityID` whenever that contract changes. Dynamic state that
+is not in a transcript—including `SkillActivations`, closures, and session
+properties—must be persisted and reinjected by the app before the factory runs.
+Profile history transforms run inside Foundation Models; CoreAgent's transcript
+retention runs afterward at persistence time, so avoid configuring two
+compactors that discard the same context.
+
+Profile-owned tools are intentionally not advertised as governed: Foundation
+Models keeps those tools opaque to CoreAgent's `AnyTool` wrappers. Use the
+explicit `model:tools:instructions:` initializer when approval, call budgets,
+trusted manifests, or per-tool execution timeouts are required. Profile mode
+rejects multi-attempt retries because CoreAgent cannot safely observe
+profile-owned tools, lifecycle hooks, or transcript-policy modifiers before
+they take effect. CoreAgent attaches best-effort observation-only `onToolCall`
+and `onToolOutput` modifiers. They preserve native call/output IDs when their
+lifecycle chain completes, including when a later model continuation reverts
+the transcript. An earlier throwing hook inside the supplied profile can
+preempt CoreAgent's outer observer and erase that evidence; every profile run
+contains `profileToolAuditBestEffort` to make this limit machine-visible.
+
+## Native typed and multimodal input
+
+There is no CoreAgent-specific message type to flatten rich input.
+
+```swift
+@Generable
+struct Inspection: Sendable {
+  let summary: String
+  let severity: String
 }
 
-let agent = ToolCallingAgent(
-  tools: [slugify],
-  model: FoundationModelProvider()
+let prompt = Prompt {
+  Attachment(image).label("screenshot")
+  "Inspect this UI failure."
+}
+
+let response = try await agent.respond(
+  to: prompt,
+  generating: Inspection.self
 )
 
-let run = try await agent.run(
-  "Use slugify for 'Foundation Models Agent Runtime'. Return only the slug."
-)
+print(response.content.summary)
 ```
 
-Each tool can publish a `ToolManifest` containing its name, description, inputs, output description, and digest. Those manifests are used for trust checks, discovery documents, and configuration verification.
+Provider-defined `Transcript.CustomSegment` values can carry modalities such as
+audio or video without CoreAgent needing to understand or convert them.
 
-## Foundation Models
+## Govern native tools
 
-`CoreAgentFoundationModels` provides the OS 27 Foundation Models backend:
-
-- `FoundationModelProvider` implements `ModelProvider` and `StreamingModelProvider`.
-- `FoundationModelRuntime` selects either `SystemLanguageModel` or `PrivateCloudComputeLanguageModel`.
-- `FoundationModelRuntimeSelection` chooses on-device generation, Private Cloud Compute, or PCC when it is available.
-- `FoundationModelRuntimeSnapshot` reports availability, context size, capabilities, locale support, and PCC quota state.
-- `FoundationModelToolAdapter` bridges CoreAgent tools into Foundation Models tools.
-- `FoundationModelSchemaAdapter` converts `ToolInput` trees into Foundation Models schemas.
-- `FoundationModelToolAudit` records Foundation Models-native tool authorization events.
-- `ContextOptions` can be passed through for OS 27 reasoning levels and schema prompting.
-
-Use Private Cloud Compute when your app has the required entitlement, or let CoreAgent choose PCC when it is available:
+Pass ordinary Foundation Models tools. CoreAgent erases them with Apple's
+`AnyTool`, applies policy, and delegates execution back to the native session.
 
 ```swift
-let provider = FoundationModelProvider(
-  runtime: .privateCloudCompute(PrivateCloudComputeLanguageModel()),
-  contextOptions: ContextOptions(reasoningLevel: .deep)
-)
+@Generable
+struct SendEmailArguments: Sendable {
+  let recipient: String
+  let subject: String
+  let body: String
+}
 
-let adaptiveProvider = FoundationModelProvider(
-  selection: .preferPrivateCloudCompute(),
-  contextOptions: ContextOptions(reasoningLevel: .moderate)
-)
-```
+struct SendEmailTool: Tool {
+  let name = "send_email"
+  let description = "Send an email after explicit approval."
 
-Tune tool use with OS 27's Foundation Models generation options:
+  @concurrent
+  func call(arguments: SendEmailArguments) async throws -> String {
+    // Perform the side effect.
+    "sent"
+  }
+}
 
-```swift
-let provider = FoundationModelProvider(
-  options: GenerationOptions(
-    temperature: 0.7,
-    maximumResponseTokens: 512,
-    toolCallingMode: .required
+let approval = ClosureCoreAgentApprovalProvider { request in
+  // request.arguments is native GeneratedContent.
+  print(request.argumentsJSON)
+  return await askUserToApprove(request) ? .approve : .deny(reason: "User declined")
+}
+
+let agent = try CoreAgentSession(
+  model: SystemLanguageModel.default,
+  tools: [SendEmailTool()],
+  toolConfiguration: CoreAgentToolConfiguration(
+    policy: CompositeCoreAgentToolPolicy([
+      ToolNameAllowlistPolicy(["send_email"]),
+      ApprovalRequiredToolPolicy(
+        requiredNames: ["send_email"],
+        provider: approval
+      )
+    ]),
+    executionTimeout: .seconds(15),
+    maximumCallsPerRun: 3
   )
 )
 ```
 
-Inspect the active runtime before a run:
+`CoreAgentToolManifest` hashes the native tool name, description, and encoded
+`GenerationSchema`. Persist approved digests and enforce them with
+`TrustedToolManifestPolicy` to detect a changed tool contract.
+
+## Durable native memory
+
+CoreAgent checkpoints `Transcript` rather than inventing a lossy conversation
+format.
 
 ```swift
-let snapshot = await provider.runtimeSnapshot()
-print(snapshot.kind)
-print(snapshot.supportsReasoning)
-print(snapshot.privateCloudComputeQuota?.statusDescription)
+let store = FileCheckpointStore(
+  directory: URL.applicationSupportDirectory
+    .appending(path: "CoreAgent", directoryHint: .isDirectory)
+)
+
+let agent = try CoreAgentSession(
+  model: model,
+  tools: tools,
+  instructions: Instructions("Help the user."),
+  checkpointStore: store,
+  checkpointKey: "support-agent:user-123"
+)
+
+_ = try await agent.respond(to: prompt) // checkpoints after success
+let checkpoint = try await agent.checkpoint()
 ```
 
-Pass Foundation Models prompts directly when you need OS 27 prompt-builder features such as image attachments:
+On the next launch, the first request restores the checkpoint lazily. By
+default, CoreAgent rejects it if the current tool manifests do not match the
+saved toolset revision. Dynamic-profile sessions instead validate the required
+`checkpointCompatibilityID` supplied by the app.
+
+Use `CoreAgentTranscriptRetention.latestHistoryEntries(_:)` for bounded history
+or provide an async custom transform. Bounded retention keeps only whole
+prompt-led turns, so it may retain fewer entries than the limit rather than
+orphaning a tool call or output. The file store hashes keys before using them as
+filenames and writes atomically.
+
+Important Foundation Models persistence behavior in Xcode 27:
+
+- image attachments are encoded into the checkpoint and can make files large;
+- decoded images retain pixels but may lose the original URL;
+- custom segments retain data but decode through Foundation Models' erased
+  representation rather than their original concrete Swift type;
+- custom metadata values similarly lose concrete type identity;
+- credentials, model configuration, tools, closures, and dynamic-profile state
+  are not part of a transcript and must be reinjected.
+
+`FileCheckpointStore` rejects custom segments and typed metadata by default,
+because their concrete Swift types cannot be restored losslessly. Supply
+`.allowFoundationModelsTypeErasure` only when the provider explicitly supports
+the erased representation or your app rehydrates it. In-memory checkpoints do
+not cross a Codable boundary and preserve the concrete values.
+
+Encrypt sensitive checkpoint files at the application boundary. CoreAgent's
+plain file store is intentionally not presented as encrypted storage.
+
+## Traces and receipts
 
 ```swift
-let imagePrompt = Prompt {
-  Attachment(image).label("reference")
-  "Describe the craft project in this reference image."
+let observer = ClosureCoreAgentObserver { event in
+  logger.info("\(event.kind.rawValue): \(event.message)")
 }
 
-let output = try await provider.generate(prompt: imagePrompt)
+let agent = try CoreAgentSession(
+  model: model,
+  observers: [observer]
+)
+
+let response = try await agent.respond(to: prompt)
+let receipt = try CoreAgentRunReceipt(run: response.run)
+precondition(receipt.verify())
 ```
 
-Structured generation is available directly from the provider:
+Each observer has an independent, bounded serial queue, so a stalled observer
+cannot stall a model, tool call, or another observer. The default queue keeps
+256 pending events and drops the oldest on overflow; configure this with
+`CoreAgentObserverDeliveryConfiguration`. `flushObservers()` distinguishes a
+drained barrier from a timeout, cancellation, or reentrant call and reports the
+cumulative number of dropped observer events:
 
 ```swift
-let provider = FoundationModelProvider()
+let flush = await agent.flushObservers(timeout: .seconds(2))
+guard flush.deliveredAllEvents else {
+  logger.warning("Observer delivery did not drain before shutdown")
+  return
+}
+```
 
-let output = try await provider.generateStructuredContent(
-  prompt: "Summarize this agent run.",
-  schemaName: "RunSummary",
-  schemaDescription: "A short structured summary of an agent run.",
-  properties: [
-    "title": ToolInput(type: .string, description: "A short title."),
-    "summary": ToolInput(type: .string, description: "One sentence summary."),
-    "tags": .array(
-      description: "Two to four lowercase tags.",
-      items: ToolInput(type: .string, description: "A tag.")
-    )
-  ]
+Events record CoreAgent invocation IDs before execution. The post-response
+transcript projection also records Foundation Models' authoritative tool-call
+IDs. Prompt bodies, native tool arguments, and tool output bodies are not copied
+into event attributes by default; they remain in the native transcript.
+
+Receipts are SHA-256 hash chains. They detect mutation but do not prove
+authorship; sign the root hash when cryptographic attribution is required.
+
+## Streaming
+
+```swift
+let response = try await agent.respondStreaming(to: prompt) { partial in
+  await viewModel.update(text: partial)
+}
+```
+
+Typed streaming is available with `generating:`. The callback receives the
+native `PartiallyGenerated` value, and the final result includes the complete
+typed value and audited run. Response timeouts apply to streaming. A failed
+stream may retry only before its first partial response and before any governed
+tool begins, preventing duplicate UI output or side effects.
+
+## Provider Traits
+
+Every conforming `LanguageModel` already works with `CoreAgentSession`. The
+optional `CoreAgentProviders` product adds one import and construction helpers
+for the packages announced alongside Xcode 27.
+
+Enable one or more SwiftPM Traits on the CoreAgent dependency:
+
+```swift
+.package(
+  url: "https://github.com/rudrankriyam/CoreAgent.git",
+  branch: "main",
+  traits: ["AppleUtilities", "Claude"]
 )
 ```
 
-## CLI
+Available traits:
 
-CoreAgent ships with a `core-agent` executable for local testing:
-
-```bash
-swift run core-agent "Explain tool calling in one sentence."
-swift run core-agent --stream "Write one sentence about local agents."
-swift run core-agent --structured-demo "Summarize Foundation Models agents."
-```
-
-Try tools, manifests, and discovery output:
-
-```bash
-swift run core-agent --demo-tools "Use calculate to evaluate 2 + 3 * 5. Return only the result."
-swift run core-agent --demo-tools --list-tools
-swift run core-agent --demo-tools --print-config
-swift run core-agent --demo-tools --print-discovery
-```
-
-Capture and verify run artifacts:
-
-```bash
-swift run core-agent --trace /tmp/core-agent-trace.json --receipt /tmp/core-agent-receipt.json "Explain tool calling."
-swift run core-agent --verify-receipt /tmp/core-agent-receipt.json --verify-trace /tmp/core-agent-trace.json
-```
-
-Bound long runs and tool-heavy workflows:
-
-```bash
-swift run core-agent --model-timeout-seconds 30 "Answer with a bounded model call."
-swift run core-agent --run-timeout-seconds 60 "Answer within a bounded run."
-swift run core-agent --max-model-input-chars 12000 "Summarize this request."
-swift run core-agent --max-response-tokens 512 "Keep the answer short."
-swift run core-agent --max-tool-output-chars 4000 --demo-tools "Search files and summarize the matches."
-swift run core-agent --max-context-messages 12 --max-memory-messages 40 --demo-tools "Answer with bounded context."
-```
-
-Try OS 27 Foundation Models controls:
-
-```bash
-swift run core-agent --print-model-info
-swift run core-agent --pcc --print-model-info
-swift run core-agent --prefer-pcc --reasoning deep "Plan this workflow."
-swift run core-agent --tool-calling required --demo-tools "Use calculate for 12 * 9."
-swift run core-agent --temperature 0.8 --max-response-tokens 256 "Brainstorm five names."
-```
-
-Use allowlisted local files and hosts:
-
-```bash
-swift run core-agent --demo-tools --allow-file-dir /tmp "Read /tmp/example.txt and summarize it."
-swift run core-agent --demo-tools --allow-url-host example.com "Fetch https://example.com and summarize it."
-```
-
-## Core Building Blocks
-
-| Area | APIs | What it gives you |
+| Trait | Package | CoreAgent helper |
 | --- | --- | --- |
-| Agent loop | `ToolCallingAgent`, `ModelProvider`, `StreamingModelProvider` | A bounded run loop that asks the model for tool calls or a final answer. |
-| Tools | `Tool`, `ClosureTool`, `ToolInput`, `ToolManifest` | Swift actions with schemas, descriptions, and stable approval digests. |
-| Foundation Models | `FoundationModelProvider`, `FoundationModelRuntime`, `FoundationModelRuntimeSelection`, `FoundationModelRuntimeSnapshot`, `FoundationModelToolAdapter`, `FoundationModelSchemaAdapter` | OS 27 generation, PCC selection, runtime inspection, structured content, and tool bridging. |
-| Governance | `ToolExecutionPolicy`, `TrustedToolExecutionPolicy`, `ApprovalRequiredToolExecutionPolicy`, `CompositeToolExecutionPolicy` | Authorization before tool execution. |
-| Memory | `AgentMemory`, `FileAgentMemoryStore`, `ConversationCompactor`, `AgentMemorySummary`, `ModelConversationCompactor` | Persisted conversation state with structured compaction. |
-| Context | `AgentContextProvider`, `StaticAgentContextProvider`, `AgentContextProviderManifest`, `TrustedAgentContextProviderExecutionPolicy` | Trusted pre-generation context without writing it into run memory. |
-| Delegation | `ManagedAgentTool`, `ManagedAgentRunReport`, `ManagedAgentMemoryPolicy` | Agent-to-agent calls with isolated or retained delegated memory. |
-| Observability | `AgentObserver`, `AgentEvent`, `AgentEventTrace`, `AgentRunMetrics`, `AgentTraceExporter`, `AgentReceiptExporter` | Inspectable events, metrics, traces, and verifiable receipts. |
-| Safety | `ToolOutputSanitizer`, `PromptInjectionShieldValidator`, `AgentRedactionPolicy`, `AgentLimits`, `AgentTimeouts` | Untrusted tool-output handling, redaction, limits, and timeouts. |
+| `AppleUtilities` | `apple/foundation-models-utilities` | `openAICompatible(...)` |
+| `Claude` | `anthropics/ClaudeForFoundationModels` | `claude(...)` |
+| `Gemini` | Firebase AI Logic WWDC preview | `gemini(using:name:)` |
+| `AllProviders` | All three | Enables every helper |
 
-## Trusted Tools and Context
+| Provider | iOS 27 | macOS 27 | visionOS 27 |
+| --- | --- | --- | --- |
+| Apple utilities | Yes | Yes | Yes |
+| Claude | Yes | Yes | Yes |
+| Gemini WWDC preview | Yes | Yes | Not officially supported |
 
-CoreAgent can persist an agent configuration and verify that tools or context providers have not drifted before the agent runs again:
-
-```swift
-let tools: [any Tool] = [slugify]
-
-let agent = ToolCallingAgent(
-  tools: tools,
-  model: FoundationModelProvider()
-)
-
-let configuration = try agent.configuration()
-try configuration.verifyTools(tools)
-
-let rebuilt = try ToolCallingAgent(
-  configuration: configuration,
-  tools: tools,
-  model: FoundationModelProvider()
-)
-```
-
-Use `TrustedToolExecutionPolicy` or `TrustedAgentContextProviderExecutionPolicy` when a run should only accept approved manifests.
-
-## Approval Gates
-
-Apps can route selected tool calls through an approval provider:
+Add `.product(name: "CoreAgentProviders", package: "CoreAgent")`, then:
 
 ```swift
-let approval = ClosureToolApprovalProvider { context in
-  context.call.name == "send_email" ? .denied(reason: "User approval required.") : .approved
-}
+import CoreAgent
+import CoreAgentProviders
+import Foundation
+import FirebaseCore // Gemini trait only
 
-let policy = ApprovalRequiredToolExecutionPolicy(
-  requiredToolNames: ["send_email"],
-  provider: approval
+let openAICompatible = CoreAgentProviderModels.openAICompatible(
+  name: "gpt-5",
+  baseURL: URL(string: "https://api.openai.com")!,
+  headers: ["Authorization": "Bearer \(token)"]
 )
+let openAIAgent = try CoreAgentSession(model: openAICompatible)
 
-let agent = ToolCallingAgent(
-  tools: tools,
-  model: FoundationModelProvider(),
-  toolExecutionPolicy: policy
+let claude = CoreAgentProviderModels.claude(
+  auth: .proxied(headers: ["Authorization": appSessionToken]),
+  baseURL: URL(string: "https://your-relay.example.com")!
 )
+let claudeAgent = try CoreAgentSession(model: claude)
+
+// Firebase requires a configured app and GoogleService-Info.plist first.
+FirebaseApp.configure()
+let gemini = CoreAgentProviderModels.gemini(
+  using: FirebaseAIClient.firebaseAI(backend: .googleAI()),
+  name: "gemini-2.5-flash"
+)
+let geminiAgent = try CoreAgentSession(model: gemini)
 ```
 
-Policies compose, so an app can combine allowlists, approved manifests, external trust identities, and interactive approval.
+The Gemini example also requires `import FirebaseCore`, Firebase App Check, and
+the normal Firebase AI Logic app setup. Do not call `firebaseAI()` before
+`FirebaseApp.configure()`. Follow Firebase's
+[Foundation Models setup guide](https://firebase.google.com/docs/ai-logic/apple-foundation-models-framework/get-started)
+for the required `GoogleService-Info.plist` and App Check configuration.
 
-## Memory and Context
+Do not ship provider keys inside an app. Use a server relay or the provider's
+production authentication path.
 
-CoreAgent separates retained memory from injected context:
+The Apple utility repository has no release tag yet and Firebase's adapter is a
+WWDC preview, so CoreAgent pins both to verified commits. SwiftPM Traits avoid
+compiling and linking disabled products. A clean SwiftPM 6.4 default resolution
+uses no external packages; the Gemini trait is intentionally opt-in because its
+current Firebase graph is exceptionally large.
 
-- `AgentMemory` records system, user, assistant, and tool messages plus action steps and events.
-- `FileAgentMemoryStore` saves and reloads memory as JSON.
-- `ConversationCompactor` converts older messages into an `AgentMemorySummary`.
-- `ModelConversationCompactor` asks the configured model to preserve semantic summaries, user preferences, decisions, open threads, durable facts, and important tool results.
-- `AgentContextProvider` injects trusted context before generation without persisting it into the run.
+The trait syntax above is for clients that own a `Package.swift`. Xcode 27's
+Add Package UI does not currently expose dependency-trait selection. Xcode app
+projects can add the desired upstream provider package directly and pass its
+`LanguageModel` to `CoreAgentSession`; the helper product is optional and adds
+no runtime capability.
+
+## Test without keys or Apple Intelligence
+
+`CoreAgentTestSupport` contains a native `RecordedLanguageModel` and executor.
 
 ```swift
-let memoryStore = FileAgentMemoryStore(
-  fileURL: URL(fileURLWithPath: "/tmp/core-agent-memory.json")
-)
+import CoreAgent
+import CoreAgentTestSupport
 
-let agent = ToolCallingAgent(
-  tools: tools,
-  model: FoundationModelProvider(),
-  resetsMemoryBeforeRun: false,
-  limits: AgentLimits(maximumMemoryMessages: 40),
-  memoryStore: memoryStore,
-  conversationCompactor: ModelConversationCompactor(
-    model: FoundationModelProvider()
-  )
-)
+let model = RecordedLanguageModel(steps: [
+  .toolCall(
+    name: "lookup",
+    argumentsJSON: #"{"query":"CoreAgent"}"#
+  ),
+  .response(text: "Recorded final response")
+])
+
+let agent = try CoreAgentSession(model: model, tools: [LookupTool()])
+let response = try await agent.respond(to: "Test the flow")
 ```
 
-## Traces and Receipts
+No API key, network request, or local Apple model is involved. Captured native
+request transcripts are available through `model.recorder` for assertions.
+The provider-trait tests are construction/compilation smoke tests, not live API
+integration tests.
 
-Run artifacts are first-class:
+Run the matrix:
 
-```swift
-let run = try await agent.run("Use the available tools and summarize the result.")
-
-try AgentTraceExporter().write(
-  run,
-  to: URL(fileURLWithPath: "/tmp/core-agent-trace.json")
-)
-
-try AgentReceiptExporter().write(
-  run,
-  to: URL(fileURLWithPath: "/tmp/core-agent-receipt.json")
-)
+```bash
+swift test
+swift test --traits AppleUtilities
+swift test --traits Claude
+swift test --traits Gemini
+swift test --traits AllProviders
 ```
 
-Traces are useful for debugging and support. Receipts contain a hash chain that can be verified later with the CLI.
+## Deliberate boundaries
 
-## Package Layout
+Foundation Models owns the inner model/tool loop. Consequently CoreAgent does
+not claim it can generically provide:
 
-- `CoreAgent`: core agent loop, tool contracts, memory, policies, traces, receipts, and run metrics.
-- `CoreAgentFoundationModels`: Apple Foundation Models provider and schema/tool adapters.
-- `CoreAgentTools`: reusable tools for time, arithmetic, allowlisted file reads, local text search, and allowlisted URL fetches.
-- `core-agent`: local CLI for running prompts, trying tools, printing manifests, and exporting artifacts.
+- direct-return or action-only semantics after an arbitrary native tool;
+- model-planned tool ordering or per-model-step call limits;
+- inspection, truncation, or sanitization of an arbitrary tool's opaque
+  `Prompt` output before the model consumes it;
+- Foundation Models' native tool-call ID before `Tool.call` begins.
 
-## Roadmap
+Tools owned by a dynamic profile also stay outside CoreAgent's pre-execution
+policy wrapper. Their lifecycle audit is best effort: a throwing inner profile
+hook can prevent CoreAgent's observer from seeing a completed effect. Use the
+explicit tools initializer for governance and audit guarantees.
 
-- App Intents bridge.
-- Shortcuts bridge.
-- SwiftUI run inspector.
-- SwiftData and SQLite memory stores.
-- Local retrieval examples for app-private knowledge.
+CoreAgent can deny calls, enforce a total budget, time out execution, apply
+policy decisions, and audit the authoritative transcript afterward. Strong
+output filtering belongs in a CoreAgent-owned tool whose output contract is
+inspectable.
 
-## Contributing
+Automatic retries stop as soon as a governed tool invocation begins, including
+authorization. Apps may explicitly set `allowsRetryAfterToolInvocation` only
+when every side effect is idempotent.
+Checkpoint write failures are recorded and return the completed model response
+by default; select `.failRun` only when callers will not blindly repeat side
+effects.
 
-Issues, ideas, and pull requests are welcome. Keep contributions focused on Apple-native agent workflows, inspectable execution, and APIs that feel natural in Swift apps.
+## License
 
-## Acknowledgements
-
-CoreAgent is inspired by [Hugging Face smolagents](https://github.com/huggingface/smolagents): small agent loops, tool-first execution, and readable primitives. CoreAgent brings that spirit to Swift and Apple's on-device Foundation Models stack.
-
-[![Star History Chart](https://api.star-history.com/svg?repos=rudrankriyam/CoreAgent&type=Date)](https://star-history.com/#rudrankriyam/CoreAgent&Date)
+CoreAgent is available under the MIT license.
