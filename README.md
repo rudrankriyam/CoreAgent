@@ -384,7 +384,7 @@ Available traits:
 
 | Trait | Package | CoreAgent helper |
 | --- | --- | --- |
-| `AppleUtilities` | `apple/foundation-models-utilities` | `openAICompatible(...)` |
+| `AppleUtilities` | `apple/foundation-models-utilities` | `chatCompletions(...)` |
 | `Claude` | `anthropics/ClaudeForFoundationModels` | `claude(...)` |
 | `Gemini` | Firebase AI Logic WWDC preview | `gemini(using:name:)` |
 | `AllProviders` | All three | Enables every helper |
@@ -403,12 +403,12 @@ import CoreAgentProviders
 import Foundation
 import FirebaseCore // Gemini trait only
 
-let openAICompatible = CoreAgentProviderModels.openAICompatible(
-  name: "gpt-5",
-  baseURL: URL(string: "https://api.openai.com")!,
-  headers: ["Authorization": "Bearer \(token)"]
+let localModel = CoreAgentProviderModels.chatCompletions(
+  name: "local-model",
+  baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
+  supportsGuidedGeneration: false
 )
-let openAIAgent = try CoreAgentSession(model: openAICompatible)
+let localAgent = try CoreAgentSession(model: localModel)
 
 let claude = CoreAgentProviderModels.claude(
   auth: .proxied(headers: ["Authorization": appSessionToken]),
@@ -424,6 +424,12 @@ let gemini = CoreAgentProviderModels.gemini(
 )
 let geminiAgent = try CoreAgentSession(model: gemini)
 ```
+
+`chatCompletions(...)` is Apple's generic protocol client for local,
+self-hosted, or developer-controlled servers that implement the Chat
+Completions REST API. It is not an official OpenAI SDK. Never embed a shared
+provider API key in an app binary; put hosted-provider credentials behind a
+server-controlled endpoint.
 
 The Gemini example also requires `import FirebaseCore`, Firebase App Check, and
 the normal Firebase AI Logic app setup. Do not call `firebaseAI()` before

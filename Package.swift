@@ -19,7 +19,7 @@ let package = Package(
     .trait(
       name: "AppleUtilities",
       description:
-        "Enable Apple's FoundationModelsUtilities provider, including OpenAI-compatible Chat Completions."
+        "Enable Apple's FoundationModelsUtilities provider, including its generic Chat Completions client."
     ),
     .trait(
       name: "Claude",
