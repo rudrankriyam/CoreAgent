@@ -78,6 +78,47 @@ private struct ApproveAllMemoryCandidates: CoreAgentMemoryApprovalProvider {
   }
 }
 
+private actor ThrowingMemoryApprovalProvider: CoreAgentMemoryApprovalProvider {
+  private(set) var calls = 0
+
+  func decision(
+    for candidate: CoreAgentMemoryCandidate
+  ) throws -> CoreAgentMemoryApprovalDecision {
+    calls += 1
+    throw TestMemoryError.intentional
+  }
+}
+
+private actor BlockingCountingConsolidator: CoreAgentMemoryConsolidator {
+  private(set) var calls = 0
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+  func consolidate(episode: CoreAgentMemoryRecord) async -> [CoreAgentMemoryCandidateDraft] {
+    calls += 1
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    for waiter in waiters { waiter.resume() }
+    await withCheckedContinuation { continuation in
+      releaseWaiters.append(continuation)
+    }
+    return []
+  }
+
+  func waitUntilStarted() async {
+    guard calls == 0 else { return }
+    await withCheckedContinuation { continuation in
+      startWaiters.append(continuation)
+    }
+  }
+
+  func finish() {
+    let waiters = releaseWaiters
+    releaseWaiters.removeAll()
+    for waiter in waiters { waiter.resume() }
+  }
+}
+
 private func makeScope(
   application: String = "com.example.app",
   user: String = "user-1",
@@ -353,6 +394,103 @@ struct CoreAgentMemoryTests {
     let failure = try #require(try await coordinator.consolidationFailures().first)
     #expect(failure.attemptCount == 3)
     #expect(await consolidator.calls == 3)
+  }
+
+  @Test("Approval-provider failures remain durable and exhaust the retry policy")
+  func approvalFailureRetryExhaustion() async throws {
+    let scope = try makeScope()
+    let store = InMemoryCoreAgentMemoryStore()
+    let episode = try makeRecord(
+      scope: scope,
+      content: "USER:\nI prefer gyokuro tea.",
+      kind: .episode
+    )
+    try await store.saveEpisode(
+      episode,
+      enqueueing: .init(scope: scope, episodeID: episode.id)
+    )
+    let approvalProvider = ThrowingMemoryApprovalProvider()
+    let coordinator = CoreAgentMemoryCoordinator(
+      scope: scope,
+      store: store,
+      disclosurePolicy: .init(destination: .onDevice),
+      consolidator: TestConsolidator(
+        drafts: [try .init(kind: .preference, content: "The user prefers gyokuro tea.")]
+      ),
+      approvalProvider: approvalProvider
+    )
+
+    await coordinator.flush()
+
+    let failure = try #require(try await coordinator.consolidationFailures().first)
+    #expect(failure.attemptCount == 3)
+    #expect(await approvalProvider.calls == 3)
+    #expect(try await coordinator.pendingCandidates().count == 1)
+  }
+
+  @Test("A shared store atomically claims each consolidation job once")
+  func atomicConsolidationClaim() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let scope = try makeScope()
+    let stores: [any CoreAgentMemoryStore] = [
+      InMemoryCoreAgentMemoryStore(),
+      try SQLiteCoreAgentMemoryStore(
+        databaseURL: directory.appending(path: "claims.sqlite"),
+        configuration: .init(fileProtection: .none, excludesFromBackup: false)
+      ),
+    ]
+
+    for store in stores {
+      let episode = try makeRecord(scope: scope, content: "USER:\nRemember this.", kind: .episode)
+      let job = CoreAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
+      try await store.saveEpisode(episode, enqueueing: job)
+
+      async let firstClaim = store.claimNextConsolidationJob(in: scope)
+      async let secondClaim = store.claimNextConsolidationJob(in: scope)
+      let (first, second) = try await (firstClaim, secondClaim)
+      let claims = [first, second].compactMap { $0 }
+
+      #expect(claims.count == 1)
+      var claimed = try #require(claims.first)
+      #expect(claimed.status == .processing)
+      #expect(claimed.attemptCount == 1)
+      claimed.status = .completed
+      try await store.save(claimed)
+      #expect(try await store.claimNextConsolidationJob(in: scope) == nil)
+    }
+  }
+
+  @Test("Coordinators sharing a store do not consolidate the same episode twice")
+  func sharedStoreSingleConsolidation() async throws {
+    let scope = try makeScope()
+    let store = InMemoryCoreAgentMemoryStore()
+    let episode = try makeRecord(scope: scope, content: "USER:\nOne episode.", kind: .episode)
+    let job = CoreAgentMemoryConsolidationJob(scope: scope, episodeID: episode.id)
+    try await store.saveEpisode(episode, enqueueing: job)
+    let consolidator = BlockingCountingConsolidator()
+    let first = CoreAgentMemoryCoordinator(
+      scope: scope,
+      store: store,
+      disclosurePolicy: .init(destination: .onDevice),
+      consolidator: consolidator
+    )
+    let second = CoreAgentMemoryCoordinator(
+      scope: scope,
+      store: store,
+      disclosurePolicy: .init(destination: .onDevice),
+      consolidator: consolidator
+    )
+
+    await consolidator.waitUntilStarted()
+    try await Task.sleep(for: .milliseconds(20))
+    #expect(await consolidator.calls == 1)
+    await consolidator.finish()
+    await first.flush()
+    await second.flush()
+
+    #expect(await consolidator.calls == 1)
+    #expect(await store.consolidationJob(id: job.id, in: scope)?.status == .completed)
   }
 
   @Test("Consolidated semantics stay pending until policy approval")

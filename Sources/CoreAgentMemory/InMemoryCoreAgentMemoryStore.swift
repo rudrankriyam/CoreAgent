@@ -4,6 +4,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
   private var storedRecords: [UUID: CoreAgentMemoryRecord]
   private var storedCandidates: [UUID: CoreAgentMemoryCandidate]
   private var storedJobs: [UUID: CoreAgentMemoryConsolidationJob]
+  private var claimedJobIDs: Set<UUID>
   private var storedTombstones: [UUID: CoreAgentMemoryTombstone]
   private var storedExportDirectories: [CoreAgentMemoryScope: Set<String>]
 
@@ -16,6 +17,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     self.storedRecords = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
     self.storedCandidates = Dictionary(uniqueKeysWithValues: candidates.map { ($0.id, $0) })
     self.storedJobs = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+    self.claimedJobIDs = []
     self.storedTombstones = Dictionary(uniqueKeysWithValues: tombstones.map { ($0.id, $0) })
     self.storedExportDirectories = [:]
   }
@@ -143,6 +145,7 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
       job.lastError = "The source episode was tombstoned."
       job.updatedAt = tombstone.deletedAt
       storedJobs[jobID] = job
+      claimedJobIDs.remove(jobID)
     }
     return tombstone
   }
@@ -167,10 +170,15 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     storedCandidates = storedCandidates.filter {
       $0.value.scope != scope || $0.value.sourceRecordID != id
     }
+    let removedJobIDs = storedJobs.values
+      .filter { $0.scope == scope && $0.episodeID == id }
+      .map(\.id)
     storedJobs = storedJobs.filter { $0.value.scope != scope || $0.value.episodeID != id }
+    claimedJobIDs.subtract(removedJobIDs)
   }
 
   public func purge(scope: CoreAgentMemoryScope) {
+    claimedJobIDs.subtract(storedJobs.values.filter { $0.scope == scope }.map(\.id))
     storedRecords = storedRecords.filter { $0.value.scope != scope }
     storedCandidates = storedCandidates.filter { $0.value.scope != scope }
     storedJobs = storedJobs.filter { $0.value.scope != scope }
@@ -255,6 +263,9 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
       throw CoreAgentMemoryError.sourceRecordInactive(job.episodeID)
     }
     storedJobs[job.id] = job
+    if job.status != .processing {
+      claimedJobIDs.remove(job.id)
+    }
   }
 
   public func consolidationJob(
@@ -274,6 +285,38 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
         if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
         return $0.id.uuidString < $1.id.uuidString
       }
+  }
+
+  public func claimNextConsolidationJob(
+    in scope: CoreAgentMemoryScope
+  ) -> CoreAgentMemoryConsolidationJob? {
+    let jobs = storedJobs.values
+      .filter {
+        $0.scope == scope
+          && ($0.status == .queued || $0.status == .processing)
+          && !claimedJobIDs.contains($0.id)
+      }
+      .sorted {
+        if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+        return $0.id.uuidString < $1.id.uuidString
+      }
+
+    for var job in jobs {
+      guard storedRecords[job.episodeID]?.isActive == true else {
+        job.status = .cancelled
+        job.lastError = "The source episode is not active."
+        job.updatedAt = Date()
+        storedJobs[job.id] = job
+        continue
+      }
+      job.status = .processing
+      job.attemptCount += 1
+      job.updatedAt = Date()
+      storedJobs[job.id] = job
+      claimedJobIDs.insert(job.id)
+      return job
+    }
+    return nil
   }
 
   public func registerExportDirectory(_ path: String, in scope: CoreAgentMemoryScope) {

@@ -52,19 +52,16 @@ actor CoreAgentMemoryConsolidationWorker {
 
   private func drain() async {
     while !Task.isCancelled {
-      let jobs: [CoreAgentMemoryConsolidationJob]
+      let job: CoreAgentMemoryConsolidationJob?
       do {
-        jobs = try await store.consolidationJobs(
-          in: scope,
-          statuses: [.queued, .processing]
-        )
+        job = try await store.claimNextConsolidationJob(in: scope)
       } catch {
         await runtime.emit(
           .init(
             kind: .consolidationFailed,
             scope: scope,
             attributes: [
-              "stage": "load_queue",
+              "stage": "claim_queue",
               "error_type": String(reflecting: Swift.type(of: error)),
             ]
           )
@@ -73,7 +70,7 @@ actor CoreAgentMemoryConsolidationWorker {
         return
       }
 
-      guard let job = jobs.first else {
+      guard let job else {
         task = nil
         return
       }
@@ -84,7 +81,7 @@ actor CoreAgentMemoryConsolidationWorker {
 
   private func process(_ original: CoreAgentMemoryConsolidationJob) async {
     var job = original
-    guard job.attemptCount < job.maximumAttempts else {
+    guard job.attemptCount <= job.maximumAttempts else {
       job.status = .failed
       job.lastError = job.lastError ?? "The consolidation attempt limit was reached."
       job.updatedAt = Date()
@@ -100,12 +97,8 @@ actor CoreAgentMemoryConsolidationWorker {
       )
       return
     }
-    job.status = .processing
-    job.attemptCount += 1
-    job.updatedAt = Date()
 
     do {
-      try await store.save(job)
       await runtime.emit(
         .init(
           kind: .consolidationStarted,
@@ -223,7 +216,7 @@ actor CoreAgentMemoryConsolidationWorker {
           ]
         )
       )
-      return
+      throw error
     }
 
     switch decision {

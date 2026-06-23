@@ -117,11 +117,12 @@ user-facing session. Proposed facts, preferences, procedures, and reflections
 remain pending. Review them with `pendingCandidates()`, then call `approve(_:)`
 or `reject(_:reason:)`. An approval provider may automate the same decision.
 
-Queued and interrupted jobs resume when the coordinator is constructed. A job
-gets at most three attempts. Terminal failures are available through
-`consolidationFailures()` and can be reset with
-`retryFailedConsolidation()`. `flush()` waits for consolidation and scheduled
-index repair.
+Queued and interrupted jobs resume when the coordinator is constructed. Stores
+claim jobs atomically, so coordinators sharing a store cannot consolidate the
+same episode concurrently. A job gets at most three attempts, including failures
+from an approval provider. Terminal failures are available through
+`consolidationFailures()` and can be reset with `retryFailedConsolidation()`.
+`flush()` waits for consolidation and scheduled index repair.
 
 ## Direct lifecycle APIs
 

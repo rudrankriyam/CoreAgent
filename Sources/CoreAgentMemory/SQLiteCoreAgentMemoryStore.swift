@@ -32,6 +32,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
   private let encoder: JSONEncoder
   private let decoder: JSONDecoder
   private let configuration: SQLiteCoreAgentMemoryStoreConfiguration
+  private var claimedJobIDs: Set<UUID> = []
 
   public init(
     databaseURL: URL,
@@ -192,6 +193,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     reason: String?
   ) throws -> CoreAgentMemoryTombstone {
     let tombstone = CoreAgentMemoryTombstone(recordID: id, scope: scope, reason: reason)
+    var cancelledJobIDs: Set<UUID> = []
     try transaction {
       guard var record = try fetchRecord(id: id, scope: scope) else {
         throw CoreAgentMemoryError.recordNotFound(id)
@@ -215,8 +217,10 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
         job.lastError = "The source episode was tombstoned."
         job.updatedAt = tombstone.deletedAt
         try saveJob(job)
+        cancelledJobIDs.insert(job.id)
       }
     }
+    claimedJobIDs.subtract(cancelledJobIDs)
     try refreshFilePolicies()
     return tombstone
   }
@@ -238,6 +242,10 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
   }
 
   public func purge(id: UUID, in scope: CoreAgentMemoryScope) throws {
+    let removedJobIDs = try consolidationJobs(
+      in: scope,
+      statuses: Set(CoreAgentMemoryConsolidationJobStatus.allCases)
+    ).filter { $0.episodeID == id }.map(\.id)
     try transaction {
       guard try fetchRecord(id: id, scope: scope) != nil else { return }
       for var linked in try records(in: scope) where linked.id != id {
@@ -274,10 +282,15 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       try bind(scope, to: statement, startingAt: 2)
       try statement.run()
     }
+    claimedJobIDs.subtract(removedJobIDs)
     try refreshFilePolicies()
   }
 
   public func purge(scope: CoreAgentMemoryScope) throws {
+    let removedJobIDs = try consolidationJobs(
+      in: scope,
+      statuses: Set(CoreAgentMemoryConsolidationJobStatus.allCases)
+    ).map(\.id)
     try transaction {
       let fts = try prepare(
         """
@@ -301,6 +314,7 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
         try statement.run()
       }
     }
+    claimedJobIDs.subtract(removedJobIDs)
     try refreshFilePolicies()
   }
 
@@ -381,6 +395,9 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
 
   public func save(_ job: CoreAgentMemoryConsolidationJob) throws {
     try transaction { try saveJob(job) }
+    if job.status != .processing {
+      claimedJobIDs.remove(job.id)
+    }
     try refreshFilePolicies()
   }
 
@@ -422,6 +439,36 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
       try statement.bind(status.rawValue, at: Int32(offset + 4))
     }
     return try decodeRows(statement, as: CoreAgentMemoryConsolidationJob.self)
+  }
+
+  public func claimNextConsolidationJob(
+    in scope: CoreAgentMemoryScope
+  ) throws -> CoreAgentMemoryConsolidationJob? {
+    var claimed: CoreAgentMemoryConsolidationJob?
+    try transaction {
+      let jobs = try consolidationJobs(in: scope, statuses: [.queued, .processing])
+      for var job in jobs where !claimedJobIDs.contains(job.id) {
+        guard let source = try fetchRecord(id: job.episodeID, scope: scope), source.isActive
+        else {
+          job.status = .cancelled
+          job.lastError = "The source episode is not active."
+          job.updatedAt = Date()
+          try saveJob(job)
+          continue
+        }
+        job.status = .processing
+        job.attemptCount += 1
+        job.updatedAt = Date()
+        try saveJob(job)
+        claimed = job
+        break
+      }
+    }
+    if let claimed {
+      claimedJobIDs.insert(claimed.id)
+    }
+    try refreshFilePolicies()
+    return claimed
   }
 
   public func registerExportDirectory(

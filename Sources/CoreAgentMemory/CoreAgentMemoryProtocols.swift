@@ -59,6 +59,9 @@ public protocol CoreAgentMemoryStore: Sendable {
     in scope: CoreAgentMemoryScope,
     statuses: Set<CoreAgentMemoryConsolidationJobStatus>
   ) async throws -> [CoreAgentMemoryConsolidationJob]
+  /// Atomically moves one eligible job to processing and returns it to exactly one caller.
+  func claimNextConsolidationJob(in scope: CoreAgentMemoryScope) async throws
+    -> CoreAgentMemoryConsolidationJob?
   func registerExportDirectory(_ path: String, in scope: CoreAgentMemoryScope) async throws
   func exportDirectories(in scope: CoreAgentMemoryScope) async throws -> [String]
 }
