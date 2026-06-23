@@ -32,9 +32,22 @@ actor CoreAgentMemoryConsolidationWorker {
   }
 
   func flush() async {
-    resume()
-    while let current = task {
-      await current.value
+    for recoveryAttempt in 1...3 {
+      resume()
+      while let current = task {
+        await current.value
+      }
+      guard
+        let unfinished = try? await store.consolidationJobs(
+          in: scope,
+          statuses: [.queued, .processing]
+        ),
+        !unfinished.isEmpty,
+        recoveryAttempt < 3
+      else {
+        return
+      }
+      try? await Task.sleep(for: .milliseconds(100 * recoveryAttempt))
     }
   }
 
@@ -74,18 +87,23 @@ actor CoreAgentMemoryConsolidationWorker {
         task = nil
         return
       }
-      await process(job)
+      let didPersistState = await process(job)
+      await store.releaseConsolidationJobClaim(id: job.id, in: scope)
+      guard didPersistState else {
+        task = nil
+        return
+      }
     }
     task = nil
   }
 
-  private func process(_ original: CoreAgentMemoryConsolidationJob) async {
+  private func process(_ original: CoreAgentMemoryConsolidationJob) async -> Bool {
     var job = original
     guard job.attemptCount <= job.maximumAttempts else {
       job.status = .failed
       job.lastError = job.lastError ?? "The consolidation attempt limit was reached."
       job.updatedAt = Date()
-      try? await store.save(job)
+      let didPersistState = await persist(job, stage: "attempt_limit_state")
       await runtime.emit(
         .init(
           kind: .consolidationFailed,
@@ -95,7 +113,7 @@ actor CoreAgentMemoryConsolidationWorker {
           attributes: ["terminal": "true", "stage": "attempt_limit"]
         )
       )
-      return
+      return didPersistState
     }
 
     do {
@@ -115,7 +133,7 @@ actor CoreAgentMemoryConsolidationWorker {
         job.status = .cancelled
         job.lastError = "The source episode is not active."
         job.updatedAt = Date()
-        try await store.save(job)
+        guard await persist(job, stage: "cancelled_state") else { return false }
         await runtime.emit(
           .init(
             kind: .consolidationCancelled,
@@ -125,7 +143,7 @@ actor CoreAgentMemoryConsolidationWorker {
             attributes: ["source_status": episode.status.rawValue]
           )
         )
-        return
+        return true
       }
       let drafts = try await consolidator.consolidate(episode: episode)
       for draft in drafts where draft.kind != .episode {
@@ -134,7 +152,7 @@ actor CoreAgentMemoryConsolidationWorker {
       job.status = .completed
       job.lastError = nil
       job.updatedAt = Date()
-      try await store.save(job)
+      guard await persist(job, stage: "completed_state") else { return false }
       await runtime.emit(
         .init(
           kind: .consolidationCompleted,
@@ -144,11 +162,12 @@ actor CoreAgentMemoryConsolidationWorker {
           attributes: ["candidate_count": String(drafts.count)]
         )
       )
+      return true
     } catch {
       job.status = job.attemptCount < job.maximumAttempts ? .queued : .failed
       job.lastError = String(describing: error)
       job.updatedAt = Date()
-      try? await store.save(job)
+      let didPersistState = await persist(job, stage: "failure_state")
       await runtime.emit(
         .init(
           kind: .consolidationFailed,
@@ -158,10 +177,37 @@ actor CoreAgentMemoryConsolidationWorker {
           attributes: [
             "attempt": String(job.attemptCount),
             "terminal": String(job.status == .failed),
+            "state_persisted": String(didPersistState),
             "error_type": String(reflecting: Swift.type(of: error)),
           ]
         )
       )
+      return didPersistState
+    }
+  }
+
+  private func persist(
+    _ job: CoreAgentMemoryConsolidationJob,
+    stage: String
+  ) async -> Bool {
+    do {
+      try await store.save(job)
+      return true
+    } catch {
+      await runtime.emit(
+        .init(
+          kind: .consolidationFailed,
+          scope: scope,
+          recordID: job.episodeID,
+          jobID: job.id,
+          attributes: [
+            "stage": stage,
+            "state_persisted": "false",
+            "error_type": String(reflecting: Swift.type(of: error)),
+          ]
+        )
+      )
+      return false
     }
   }
 

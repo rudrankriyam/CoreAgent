@@ -62,6 +62,8 @@ public protocol CoreAgentMemoryStore: Sendable {
   /// Atomically moves one eligible job to processing and returns it to exactly one caller.
   func claimNextConsolidationJob(in scope: CoreAgentMemoryScope) async throws
     -> CoreAgentMemoryConsolidationJob?
+  /// Releases this store instance's in-process claim without changing durable job state.
+  func releaseConsolidationJobClaim(id: UUID, in scope: CoreAgentMemoryScope) async
   func registerExportDirectory(_ path: String, in scope: CoreAgentMemoryScope) async throws
   func exportDirectories(in scope: CoreAgentMemoryScope) async throws -> [String]
 }

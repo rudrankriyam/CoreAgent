@@ -455,6 +455,10 @@ struct CoreAgentMemoryTests {
       var claimed = try #require(claims.first)
       #expect(claimed.status == .processing)
       #expect(claimed.attemptCount == 1)
+      await store.releaseConsolidationJobClaim(id: claimed.id, in: scope)
+      claimed = try #require(try await store.claimNextConsolidationJob(in: scope))
+      #expect(claimed.status == .processing)
+      #expect(claimed.attemptCount == 2)
       claimed.status = .completed
       try await store.save(claimed)
       #expect(try await store.claimNextConsolidationJob(in: scope) == nil)

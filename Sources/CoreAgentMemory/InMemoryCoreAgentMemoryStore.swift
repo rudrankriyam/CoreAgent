@@ -319,6 +319,11 @@ public actor InMemoryCoreAgentMemoryStore: CoreAgentMemoryStore {
     return nil
   }
 
+  public func releaseConsolidationJobClaim(id: UUID, in scope: CoreAgentMemoryScope) {
+    guard storedJobs[id]?.scope == scope else { return }
+    claimedJobIDs.remove(id)
+  }
+
   public func registerExportDirectory(_ path: String, in scope: CoreAgentMemoryScope) {
     storedExportDirectories[scope, default: []].insert(path)
   }

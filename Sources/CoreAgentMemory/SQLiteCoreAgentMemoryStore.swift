@@ -471,6 +471,11 @@ public actor SQLiteCoreAgentMemoryStore: CoreAgentMemoryStore {
     return claimed
   }
 
+  public func releaseConsolidationJobClaim(id: UUID, in scope: CoreAgentMemoryScope) {
+    guard (try? consolidationJob(id: id, in: scope)) != nil else { return }
+    claimedJobIDs.remove(id)
+  }
+
   public func registerExportDirectory(
     _ path: String,
     in scope: CoreAgentMemoryScope
