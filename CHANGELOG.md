@@ -18,6 +18,17 @@
   tamper-evident receipts.
 - Added `RecordedLanguageModel` for deterministic, zero-network tests.
 - Added optional Apple utilities, Claude, and Gemini provider Traits.
+- Added session plugins with bounded pre-run context, post-run capture hooks,
+  governed plugin tools, and transcript sanitization across retries and streams.
+- Added the optional `CoreAgentMemory` product with scoped canonical SQLite
+  records, FTS5 retrieval, provenance, supersession, tombstones, and Apple file
+  protection defaults.
+- Added automatic episode capture, durable three-attempt consolidation jobs,
+  pending semantic candidates, approval policies, and a fresh-session
+  Foundation Models consolidator.
+- Added bounded untrusted-evidence injection, the governed
+  `coreagent_search_memory` tool, disclosure filtering, optional index repair,
+  deterministic Markdown export, and hard-purge cleanup.
 - Suppressed retries after tool invocation (including authorization) and
   applied timeout/retry semantics to streaming before its first partial
   response.

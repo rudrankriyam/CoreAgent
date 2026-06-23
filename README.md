@@ -12,6 +12,7 @@ CoreAgent adds the layer an app still needs around the native session:
 - per-run tool budgets and cooperative tool/model timeouts;
 - retries for failures your app classifies as safe;
 - versioned, durable native-transcript checkpoints;
+- optional scoped long-term memory with SQLite FTS, approval, and deletion;
 - toolset validation when restoring a checkpoint;
 - ordered run events, observers, usage, and tamper-evident receipts;
 - deterministic, zero-network model fixtures for tests;
@@ -47,6 +48,12 @@ Add the main library to your target:
 
 ```swift
 .product(name: "CoreAgent", package: "CoreAgent")
+```
+
+Add `CoreAgentMemory` only when the app needs inspectable long-term memory:
+
+```swift
+.product(name: "CoreAgentMemory", package: "CoreAgent")
 ```
 
 ## Quick start
@@ -147,8 +154,8 @@ audio or video without CoreAgent needing to understand or convert them.
 
 ## Govern native tools
 
-Pass ordinary Foundation Models tools. CoreAgent erases them with Apple's
-`AnyTool`, applies policy, and delegates execution back to the native session.
+Pass ordinary Foundation Models tools. CoreAgent applies an internal type
+eraser and policy, then delegates execution back to the native session.
 
 ```swift
 @Generable
@@ -196,7 +203,7 @@ let agent = try CoreAgentSession(
 `GenerationSchema`. Persist approved digests and enforce them with
 `TrustedToolManifestPolicy` to detect a changed tool contract.
 
-## Durable native memory
+## Durable native transcript checkpoints
 
 CoreAgent checkpoints `Transcript` rather than inventing a lossy conversation
 format.
@@ -248,6 +255,60 @@ not cross a Codable boundary and preserve the concrete values.
 
 Encrypt sensitive checkpoint files at the application boundary. CoreAgent's
 plain file store is intentionally not presented as encrypted storage.
+
+## Production long-term memory
+
+`CoreAgentMemory` is a separate, optional product. Checkpoints resume one native
+transcript; long-term memory retrieves durable evidence across transcripts.
+Neither store is a substitute for the other.
+
+```swift
+import CoreAgent
+import CoreAgentMemory
+
+let scope = try CoreAgentMemoryScope(
+  applicationID: "com.example.assistant",
+  userID: signedInUserID,
+  agentID: "support"
+)
+
+let memoryStore = try SQLiteCoreAgentMemoryStore(
+  databaseURL: URL.applicationSupportDirectory
+    .appending(path: "CoreAgent/memory.sqlite")
+)
+
+let memory = CoreAgentMemoryCoordinator(
+  scope: scope,
+  store: memoryStore,
+  disclosurePolicy: CoreAgentMemoryDisclosurePolicy(destination: .onDevice)
+)
+
+let agent = try CoreAgentSession(
+  model: model,
+  plugins: [memory]
+)
+```
+
+String prompts automatically become the bounded retrieval query. Rich
+`Prompt` values require an explicit `contextQuery:`; otherwise automatic recall
+is skipped while `memory.searchTool` remains available. Retrieved records are
+inserted before the original prompt as delimited, untrusted evidence, then
+removed from active and checkpointed transcript history after generation.
+
+SQLite is canonical and uses FTS5. It stores provenance, supersessions,
+pending candidates, durable consolidation jobs, and tombstones with WAL and
+foreign keys enabled. There is no vector-library dependency. Apps that need a
+second retrieval strategy can implement `CoreAgentMemoryIndex`; CoreAgent
+always reloads and filters canonical SQLite records before disclosure.
+
+Successful runs persist an active episode before returning. A caller-supplied
+`FoundationModelsMemoryConsolidator` uses fresh model sessions to propose facts,
+preferences, or procedures. Proposals remain pending until an approval provider
+or an explicit `approve(_:)` call accepts them. Use `flush()` at deterministic
+test or shutdown boundaries.
+
+See [Long-Term Memory](Documentation/Long-Term-Memory.md) for correction,
+deletion, export, dynamic-profile, privacy, and failure-policy details.
 
 ## Traces and receipts
 
