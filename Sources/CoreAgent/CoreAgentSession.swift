@@ -17,6 +17,8 @@ public actor CoreAgentSession {
   private let requiresMatchingCheckpointConfiguration: Bool
   private let checkpointCompatibilityRevision: String
   private let recordsProfileToolLifecycle: Bool
+  private let sessionMode: CoreAgentSessionMode
+  private let plugins: [any CoreAgentSessionPlugin]
   private let toolRuntime: CoreAgentToolRuntime
   private let recorder: CoreAgentEventRecorder
 
@@ -35,6 +37,7 @@ public actor CoreAgentSession {
     transcriptRetention: CoreAgentTranscriptRetention = .complete,
     requiresMatchingToolset: Bool = true,
     instructionRestorationPolicy: CoreAgentInstructionRestorationPolicy = .replaceWithCurrent,
+    plugins: [any CoreAgentSessionPlugin] = [],
     redactionPolicy: CoreAgentRedactionPolicy = .standard,
     observers: [any CoreAgentObserver] = [],
     observerDeliveryConfiguration: CoreAgentObserverDeliveryConfiguration = .default
@@ -45,6 +48,7 @@ public actor CoreAgentSession {
       transcriptRetention: transcriptRetention,
       observerDeliveryConfiguration: observerDeliveryConfiguration
     )
+    try Self.validate(plugins: plugins)
 
     let recorder = CoreAgentEventRecorder(
       observers: observers,
@@ -52,9 +56,11 @@ public actor CoreAgentSession {
       deliveryConfiguration: observerDeliveryConfiguration
     )
     let runtime = CoreAgentToolRuntime(maximumCallsPerRun: toolConfiguration.maximumCallsPerRun)
-    let prepared = try tools.map { tool -> (any Tool, CoreAgentToolManifest) in
+    let allTools = tools + plugins.flatMap(\.tools)
+    try Self.validateUniqueToolNames(allTools)
+    let prepared = try allTools.map { tool -> (any Tool, CoreAgentToolManifest) in
       let manifest = try CoreAgentToolManifest(tool: tool)
-      let erased = AnyTool(tool)
+      let erased = CoreAgentAnyTool(tool)
       let governed = CoreAgentGovernedTool(
         base: erased,
         manifest: manifest,
@@ -94,6 +100,8 @@ public actor CoreAgentSession {
       requiresMatchingCheckpointConfiguration: requiresMatchingToolset,
       checkpointCompatibilityRevision: revision,
       recordsProfileToolLifecycle: false,
+      sessionMode: .explicitModel,
+      plugins: plugins,
       toolRuntime: runtime,
       recorder: recorder
     )
@@ -109,6 +117,7 @@ public actor CoreAgentSession {
     checkpointStore: (any CoreAgentCheckpointStore)? = nil,
     checkpointKey: String = "default",
     transcriptRetention: CoreAgentTranscriptRetention = .complete,
+    plugins: [any CoreAgentSessionPlugin] = [],
     redactionPolicy: CoreAgentRedactionPolicy = .standard,
     observers: [any CoreAgentObserver] = [],
     observerDeliveryConfiguration: CoreAgentObserverDeliveryConfiguration = .default,
@@ -120,6 +129,7 @@ public actor CoreAgentSession {
       transcriptRetention: transcriptRetention,
       observerDeliveryConfiguration: observerDeliveryConfiguration
     )
+    try Self.validate(plugins: plugins)
     guard !checkpointCompatibilityID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else {
       throw CoreAgentError.emptyCheckpointCompatibilityID
@@ -177,6 +187,8 @@ public actor CoreAgentSession {
       requiresMatchingCheckpointConfiguration: true,
       checkpointCompatibilityRevision: revision,
       recordsProfileToolLifecycle: true,
+      sessionMode: .dynamicProfile,
+      plugins: plugins,
       toolRuntime: runtime,
       recorder: recorder
     )
@@ -191,6 +203,8 @@ public actor CoreAgentSession {
     requiresMatchingCheckpointConfiguration: Bool,
     checkpointCompatibilityRevision: String,
     recordsProfileToolLifecycle: Bool,
+    sessionMode: CoreAgentSessionMode,
+    plugins: [any CoreAgentSessionPlugin],
     toolRuntime: CoreAgentToolRuntime,
     recorder: CoreAgentEventRecorder
   ) {
@@ -202,6 +216,8 @@ public actor CoreAgentSession {
     self.requiresMatchingCheckpointConfiguration = requiresMatchingCheckpointConfiguration
     self.checkpointCompatibilityRevision = checkpointCompatibilityRevision
     self.recordsProfileToolLifecycle = recordsProfileToolLifecycle
+    self.sessionMode = sessionMode
+    self.plugins = plugins
     self.toolRuntime = toolRuntime
     self.recorder = recorder
   }
@@ -255,11 +271,12 @@ public actor CoreAgentSession {
     to prompt: Prompt,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
-    metadata: CoreAgentRequestMetadata = [:]
+    metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil
   ) async throws -> CoreAgentResponse<String> {
-    try await performResponse {
+    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
       try await $0.respond(
-        to: prompt,
+        to: $1,
         options: options,
         contextOptions: contextOptions,
         metadata: metadata
@@ -272,13 +289,15 @@ public actor CoreAgentSession {
     to prompt: String,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
-    metadata: CoreAgentRequestMetadata = [:]
+    metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil
   ) async throws -> CoreAgentResponse<String> {
     try await respond(
       to: Prompt(prompt),
       options: options,
       contextOptions: contextOptions,
-      metadata: metadata
+      metadata: metadata,
+      contextQuery: contextQuery ?? prompt
     )
   }
 
@@ -288,11 +307,12 @@ public actor CoreAgentSession {
     generating type: Content.Type = Content.self,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:]
+    metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil
   ) async throws -> CoreAgentResponse<Content> {
-    try await performResponse {
+    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
       try await $0.respond(
-        to: prompt,
+        to: $1,
         generating: type,
         options: options,
         contextOptions: contextOptions,
@@ -307,14 +327,16 @@ public actor CoreAgentSession {
     generating type: Content.Type = Content.self,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:]
+    metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil
   ) async throws -> CoreAgentResponse<Content> {
     try await respond(
       to: Prompt(prompt),
       generating: type,
       options: options,
       contextOptions: contextOptions,
-      metadata: metadata
+      metadata: metadata,
+      contextQuery: contextQuery ?? prompt
     )
   }
 
@@ -324,11 +346,12 @@ public actor CoreAgentSession {
     schema: GenerationSchema,
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
-    metadata: CoreAgentRequestMetadata = [:]
+    metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil
   ) async throws -> CoreAgentResponse<GeneratedContent> {
-    try await performResponse {
+    try await performResponse(prompt: prompt, contextQuery: contextQuery, metadata: metadata) {
       try await $0.respond(
-        to: prompt,
+        to: $1,
         schema: schema,
         options: options,
         contextOptions: contextOptions,
@@ -343,11 +366,16 @@ public actor CoreAgentSession {
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(),
     metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil,
     onPartialResponse: @escaping @Sendable (String) async -> Void
   ) async throws -> CoreAgentResponse<String> {
-    try await performStream { session in
+    try await performStream(
+      prompt: prompt,
+      contextQuery: contextQuery,
+      metadata: metadata
+    ) { session, preparedPrompt in
       session.streamResponse(
-        to: prompt,
+        to: preparedPrompt,
         options: options,
         contextOptions: contextOptions,
         metadata: metadata
@@ -364,11 +392,16 @@ public actor CoreAgentSession {
     options: GenerationOptions = GenerationOptions(),
     contextOptions: ContextOptions = ContextOptions(includeSchemaInPrompt: true),
     metadata: CoreAgentRequestMetadata = [:],
+    contextQuery: String? = nil,
     onPartialResponse: @escaping @Sendable (Content.PartiallyGenerated) async -> Void
   ) async throws -> CoreAgentResponse<Content> where Content.PartiallyGenerated: Sendable {
-    try await performStream { session in
+    try await performStream(
+      prompt: prompt,
+      contextQuery: contextQuery,
+      metadata: metadata
+    ) { session, preparedPrompt in
       session.streamResponse(
-        to: prompt,
+        to: preparedPrompt,
         generating: type,
         options: options,
         contextOptions: contextOptions,
@@ -410,8 +443,11 @@ public actor CoreAgentSession {
   }
 
   private func performResponse<Content: Generable & Sendable>(
+    prompt: Prompt,
+    contextQuery: String?,
+    metadata: CoreAgentRequestMetadata,
     _ operation:
-      @escaping @Sendable (LanguageModelSession) async throws ->
+      @escaping @Sendable (LanguageModelSession, Prompt) async throws ->
       LanguageModelSession.Response<Content>
   ) async throws -> CoreAgentResponse<Content> {
     try acquireSessionLease()
@@ -423,15 +459,34 @@ public actor CoreAgentSession {
     await recordProfileAuditBoundary(runID: runID)
     await toolRuntime.begin(runID: runID)
     var completedModelResponse = false
+    var pluginContext = PreparedPluginContext.empty
 
     do {
+      pluginContext = try await preparePlugins(
+        runID: runID,
+        prompt: prompt,
+        contextQuery: contextQuery,
+        metadata: metadata
+      )
+      let preparedPrompt = makePrompt(prompt, contextBlocks: pluginContext.contextBlocks)
       let nativeResponse = try await responseWithRetry(
         session: session,
         runID: runID,
-        operation: operation
+        operation: { try await operation($0, preparedPrompt) }
       )
       completedModelResponse = true
       let usage = CoreAgentUsage(nativeResponse.usage)
+      let sanitizedTranscript = try sanitizePluginContext(
+        in: session.transcript,
+        contextBlocks: pluginContext.contextBlocks,
+        requiresMatch: !pluginContext.contextBlocks.isEmpty
+      )
+      let sanitizedEntries = try sanitizePluginContext(
+        in: Array(nativeResponse.transcriptEntries),
+        contextBlocks: pluginContext.contextBlocks,
+        requiresMatch: !pluginContext.contextBlocks.isEmpty
+      )
+      installSession(transcript: sanitizedTranscript, ifNeededFor: pluginContext)
       if !recordsProfileToolLifecycle {
         await recordNativeToolEntries(nativeResponse.transcriptEntries, runID: runID)
       }
@@ -445,7 +500,18 @@ public actor CoreAgentSession {
           "transcript_entries": String(nativeResponse.transcriptEntries.count),
         ]
       )
-      try await persistAfterSuccessfulResponse(transcript: session.transcript, runID: runID)
+      try await persistAfterSuccessfulResponse(transcript: sanitizedTranscript, runID: runID)
+      try await completePlugins(
+        CoreAgentPluginCompletion(
+          runID: runID,
+          contextQuery: contextQuery,
+          metadata: metadata,
+          rawContent: nativeResponse.rawContent,
+          transcriptEntries: sanitizedEntries,
+          usage: usage,
+          mode: sessionMode
+        )
+      )
       await recorder.record(
         runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
       let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
@@ -459,8 +525,24 @@ public actor CoreAgentSession {
       )
     } catch {
       if configuration.savesTranscriptAfterFailedResponse, !completedModelResponse {
-        await persistAfterFailedResponse(transcript: session.transcript, runID: runID)
+        let sanitized =
+          (try? sanitizePluginContext(
+            in: session.transcript,
+            contextBlocks: pluginContext.contextBlocks,
+            requiresMatch: false
+          )) ?? session.transcript
+        installSession(transcript: sanitized, ifNeededFor: pluginContext)
+        await persistAfterFailedResponse(transcript: sanitized, runID: runID)
       }
+      await failPlugins(
+        CoreAgentPluginFailure(
+          runID: runID,
+          contextQuery: contextQuery,
+          metadata: metadata,
+          error: error,
+          mode: sessionMode
+        )
+      )
       await recorder.record(
         runID: runID,
         kind: .runFailed,
@@ -528,8 +610,12 @@ public actor CoreAgentSession {
   }
 
   private func performStream<Content: Generable & Sendable>(
+    prompt: Prompt,
+    contextQuery: String?,
+    metadata: CoreAgentRequestMetadata,
     _ makeStream:
-      @escaping @Sendable (LanguageModelSession) -> LanguageModelSession.ResponseStream<Content>,
+      @escaping @Sendable (LanguageModelSession, Prompt) ->
+      LanguageModelSession.ResponseStream<Content>,
     onPartialResponse:
       @escaping @Sendable (Content.PartiallyGenerated, GeneratedContent) async -> Void
   ) async throws -> CoreAgentResponse<Content> where Content.PartiallyGenerated: Sendable {
@@ -543,16 +629,35 @@ public actor CoreAgentSession {
     await toolRuntime.begin(runID: runID)
 
     var completedModelResponse = false
+    var pluginContext = PreparedPluginContext.empty
     do {
+      pluginContext = try await preparePlugins(
+        runID: runID,
+        prompt: prompt,
+        contextQuery: contextQuery,
+        metadata: metadata
+      )
+      let preparedPrompt = makePrompt(prompt, contextBlocks: pluginContext.contextBlocks)
       let lastSnapshot = try await streamWithRetry(
         session: session,
         runID: runID,
-        makeStream: makeStream,
+        makeStream: { makeStream($0, preparedPrompt) },
         onPartialResponse: onPartialResponse
       )
       completedModelResponse = true
       let content = try Content(lastSnapshot.rawContent)
       let usage = CoreAgentUsage(lastSnapshot.usage)
+      let sanitizedTranscript = try sanitizePluginContext(
+        in: session.transcript,
+        contextBlocks: pluginContext.contextBlocks,
+        requiresMatch: !pluginContext.contextBlocks.isEmpty
+      )
+      let sanitizedEntries = try sanitizePluginContext(
+        in: Array(lastSnapshot.transcriptEntries),
+        contextBlocks: pluginContext.contextBlocks,
+        requiresMatch: !pluginContext.contextBlocks.isEmpty
+      )
+      installSession(transcript: sanitizedTranscript, ifNeededFor: pluginContext)
       if !recordsProfileToolLifecycle {
         await recordNativeToolEntries(lastSnapshot.transcriptEntries, runID: runID)
       }
@@ -566,7 +671,18 @@ public actor CoreAgentSession {
           "transcript_entries": String(lastSnapshot.transcriptEntries.count),
         ]
       )
-      try await persistAfterSuccessfulResponse(transcript: session.transcript, runID: runID)
+      try await persistAfterSuccessfulResponse(transcript: sanitizedTranscript, runID: runID)
+      try await completePlugins(
+        CoreAgentPluginCompletion(
+          runID: runID,
+          contextQuery: contextQuery,
+          metadata: metadata,
+          rawContent: lastSnapshot.rawContent,
+          transcriptEntries: sanitizedEntries,
+          usage: usage,
+          mode: sessionMode
+        )
+      )
       await recorder.record(
         runID: runID, kind: .runCompleted, message: "Foundation Models run completed.")
       let run = await finishRun(runID: runID, startedAt: startedAt, usage: usage)
@@ -580,8 +696,24 @@ public actor CoreAgentSession {
       )
     } catch {
       if configuration.savesTranscriptAfterFailedResponse, !completedModelResponse {
-        await persistAfterFailedResponse(transcript: session.transcript, runID: runID)
+        let sanitized =
+          (try? sanitizePluginContext(
+            in: session.transcript,
+            contextBlocks: pluginContext.contextBlocks,
+            requiresMatch: false
+          )) ?? session.transcript
+        installSession(transcript: sanitized, ifNeededFor: pluginContext)
+        await persistAfterFailedResponse(transcript: sanitized, runID: runID)
       }
+      await failPlugins(
+        CoreAgentPluginFailure(
+          runID: runID,
+          contextQuery: contextQuery,
+          metadata: metadata,
+          error: error,
+          mode: sessionMode
+        )
+      )
       await recorder.record(
         runID: runID,
         kind: .runFailed,
@@ -664,6 +796,217 @@ public actor CoreAgentSession {
       }
     }
     preconditionFailure("Retry policy must execute at least once.")
+  }
+
+  private func preparePlugins(
+    runID: UUID,
+    prompt: Prompt,
+    contextQuery: String?,
+    metadata: CoreAgentRequestMetadata
+  ) async throws -> PreparedPluginContext {
+    var blocks: [CoreAgentContextBlock] = []
+
+    for plugin in plugins {
+      await recorder.record(
+        runID: runID,
+        kind: .pluginPreparationStarted,
+        message: "CoreAgent session plugin preparation started.",
+        attributes: ["plugin": plugin.identifier]
+      )
+      do {
+        let preparation = try await plugin.prepare(
+          for: CoreAgentPluginRequest(
+            runID: runID,
+            prompt: prompt,
+            contextQuery: contextQuery,
+            metadata: metadata,
+            mode: sessionMode
+          )
+        )
+        if sessionMode == .dynamicProfile, !preparation.contextBlocks.isEmpty {
+          throw CoreAgentError.pluginContextUnsupportedForDynamicProfile
+        }
+        blocks.append(contentsOf: preparation.contextBlocks)
+        for block in preparation.contextBlocks {
+          await recorder.record(
+            runID: runID,
+            kind: .pluginEvent,
+            message: "CoreAgent session plugin contributed context.",
+            attributes: [
+              "plugin": plugin.identifier,
+              "plugin_event": "context_prepared",
+              "context_block_id": block.id,
+            ].merging(block.attributes) { current, _ in current }
+          )
+        }
+        await recordPluginEvents(preparation.events, plugin: plugin.identifier, runID: runID)
+        await recorder.record(
+          runID: runID,
+          kind: .pluginPreparationCompleted,
+          message: "CoreAgent session plugin preparation completed.",
+          attributes: [
+            "plugin": plugin.identifier,
+            "context_blocks": String(preparation.contextBlocks.count),
+          ]
+        )
+      } catch {
+        await recorder.record(
+          runID: runID,
+          kind: .pluginPreparationFailed,
+          message: String(describing: error),
+          attributes: [
+            "plugin": plugin.identifier,
+            "error_type": String(reflecting: Swift.type(of: error)),
+          ]
+        )
+        if case .failRun = plugin.failurePolicies.preparation {
+          throw error
+        }
+      }
+    }
+
+    return PreparedPluginContext(contextBlocks: blocks)
+  }
+
+  private func completePlugins(_ completion: CoreAgentPluginCompletion) async throws {
+    var fatalError: (any Error)?
+
+    for plugin in plugins {
+      await recorder.record(
+        runID: completion.runID,
+        kind: .pluginCompletionStarted,
+        message: "CoreAgent session plugin completion started.",
+        attributes: ["plugin": plugin.identifier]
+      )
+      do {
+        let events = try await plugin.didComplete(completion)
+        await recordPluginEvents(events, plugin: plugin.identifier, runID: completion.runID)
+        await recorder.record(
+          runID: completion.runID,
+          kind: .pluginCompletionCompleted,
+          message: "CoreAgent session plugin completion completed.",
+          attributes: ["plugin": plugin.identifier]
+        )
+      } catch {
+        await recorder.record(
+          runID: completion.runID,
+          kind: .pluginCompletionFailed,
+          message: String(describing: error),
+          attributes: [
+            "plugin": plugin.identifier,
+            "error_type": String(reflecting: Swift.type(of: error)),
+          ]
+        )
+        if case .failRun = plugin.failurePolicies.completion, fatalError == nil {
+          fatalError = error
+        }
+      }
+    }
+
+    if let fatalError {
+      throw fatalError
+    }
+  }
+
+  private func failPlugins(_ failure: CoreAgentPluginFailure) async {
+    for plugin in plugins {
+      let events = await plugin.didFail(failure)
+      await recordPluginEvents(events, plugin: plugin.identifier, runID: failure.runID)
+    }
+  }
+
+  private func recordPluginEvents(
+    _ events: [CoreAgentPluginEvent],
+    plugin: String,
+    runID: UUID
+  ) async {
+    for event in events {
+      var attributes = event.attributes
+      attributes["plugin"] = plugin
+      attributes["plugin_event"] = event.name
+      await recorder.record(
+        runID: runID,
+        kind: .pluginEvent,
+        message: event.message,
+        attributes: attributes
+      )
+    }
+  }
+
+  private func makePrompt(
+    _ prompt: Prompt,
+    contextBlocks: [CoreAgentContextBlock]
+  ) -> Prompt {
+    guard !contextBlocks.isEmpty else { return prompt }
+    return Prompt {
+      contextBlocks.map(\.content)
+      prompt
+    }
+  }
+
+  private func sanitizePluginContext(
+    in transcript: Transcript,
+    contextBlocks: [CoreAgentContextBlock],
+    requiresMatch: Bool
+  ) throws -> Transcript {
+    let sanitized = try sanitizePluginContext(
+      in: Array(transcript),
+      contextBlocks: contextBlocks,
+      requiresMatch: requiresMatch
+    )
+    var transcript = Transcript()
+    transcript.append(contentsOf: sanitized)
+    return transcript
+  }
+
+  private func sanitizePluginContext(
+    in entries: [Transcript.Entry],
+    contextBlocks: [CoreAgentContextBlock],
+    requiresMatch: Bool
+  ) throws -> [Transcript.Entry] {
+    guard !contextBlocks.isEmpty else { return entries }
+    let expected = contextBlocks.map(\.content)
+    var entries = entries
+
+    for index in entries.indices.reversed() {
+      guard case .prompt(let prompt) = entries[index],
+        prompt.segments.count >= expected.count
+      else {
+        continue
+      }
+      let prefix = prompt.segments.prefix(expected.count)
+      let matches = zip(prefix, expected).allSatisfy { segment, content in
+        guard case .text(let text) = segment else { return false }
+        return text.content == content
+      }
+      guard matches else { continue }
+
+      let sanitizedPrompt = Transcript.Prompt(
+        id: prompt.id,
+        metadata: prompt.metadata,
+        segments: Array(prompt.segments.dropFirst(expected.count)),
+        options: prompt.options,
+        responseFormat: prompt.responseFormat,
+        contextOptions: prompt.contextOptions
+      )
+      entries[index] = .prompt(sanitizedPrompt)
+      return entries
+    }
+
+    if requiresMatch {
+      throw CoreAgentError.pluginContextSanitizationFailed
+    }
+    return entries
+  }
+
+  private func installSession(
+    transcript: Transcript,
+    ifNeededFor context: PreparedPluginContext
+  ) {
+    guard sessionMode == .explicitModel, !context.contextBlocks.isEmpty else { return }
+    let session = makeSession(transcript)
+    session.transcriptErrorHandlingPolicy = configuration.transcriptErrorHandlingPolicy.nativeValue
+    nativeSession = session
   }
 
   private func persist(transcript: Transcript, runID: UUID?) async throws -> CoreAgentCheckpoint {
@@ -835,6 +1178,34 @@ public actor CoreAgentSession {
     }
     try transcriptRetention.validate()
   }
+
+  private static func validate(plugins: [any CoreAgentSessionPlugin]) throws {
+    var identifiers: Set<String> = []
+    for plugin in plugins {
+      let identifier = plugin.identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !identifier.isEmpty else {
+        throw CoreAgentError.emptyPluginIdentifier
+      }
+      guard identifiers.insert(identifier).inserted else {
+        throw CoreAgentError.duplicatePluginIdentifier(identifier)
+      }
+    }
+  }
+
+  private static func validateUniqueToolNames(_ tools: [any Tool]) throws {
+    var names: Set<String> = []
+    for tool in tools {
+      guard names.insert(tool.name).inserted else {
+        throw CoreAgentError.duplicateToolName(tool.name)
+      }
+    }
+  }
+}
+
+private struct PreparedPluginContext: Sendable {
+  let contextBlocks: [CoreAgentContextBlock]
+
+  static let empty = PreparedPluginContext(contextBlocks: [])
 }
 
 private final class NativeResponseBox<Content: Generable>: @unchecked Sendable {

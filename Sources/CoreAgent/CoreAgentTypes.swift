@@ -10,6 +10,9 @@ public enum CoreAgentError: Error, LocalizedError, Sendable {
   case invalidToolCallLimit(Int)
   case invalidHistoryLimit(Int)
   case invalidObserverQueueLimit(Int)
+  case duplicateToolName(String)
+  case duplicatePluginIdentifier(String)
+  case emptyPluginIdentifier
   case emptyCheckpointCompatibilityID
   case concurrentOperation
   case unsafeRetryConfiguration(String)
@@ -20,6 +23,8 @@ public enum CoreAgentError: Error, LocalizedError, Sendable {
   case streamFinishedWithoutResponse
   case toolCallBudgetExceeded(maximum: Int)
   case toolExecutionTimedOut(toolName: String)
+  case pluginContextSanitizationFailed
+  case pluginContextUnsupportedForDynamicProfile
 
   public var errorDescription: String? {
     switch self {
@@ -33,6 +38,12 @@ public enum CoreAgentError: Error, LocalizedError, Sendable {
       "The transcript history limit must be zero or greater; received \(limit)."
     case .invalidObserverQueueLimit(let limit):
       "The observer queue limit must be at least one; received \(limit)."
+    case .duplicateToolName(let name):
+      "Tool names must be unique; found more than one tool named '\(name)'."
+    case .duplicatePluginIdentifier(let identifier):
+      "CoreAgent session plugin identifiers must be unique; found '\(identifier)' more than once."
+    case .emptyPluginIdentifier:
+      "CoreAgent session plugin identifiers must not be empty."
     case .emptyCheckpointCompatibilityID:
       "The dynamic profile checkpoint compatibility ID must not be empty."
     case .concurrentOperation:
@@ -53,6 +64,10 @@ public enum CoreAgentError: Error, LocalizedError, Sendable {
       "The run exceeded its budget of \(maximum) tool calls."
     case .toolExecutionTimedOut(let toolName):
       "Tool '\(toolName)' exceeded its configured timeout."
+    case .pluginContextSanitizationFailed:
+      "CoreAgent could not remove transient plugin context from the native transcript."
+    case .pluginContextUnsupportedForDynamicProfile:
+      "Dynamic-profile sessions do not support automatic plugin prompt context. Use a profile-owned tool instead."
     }
   }
 }

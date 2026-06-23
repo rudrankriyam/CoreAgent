@@ -6,6 +6,13 @@ public enum CoreAgentEventKind: String, Codable, Equatable, Sendable {
   case modelAttemptStarted
   case modelAttemptFailed
   case modelResponseCompleted
+  case pluginPreparationStarted
+  case pluginPreparationCompleted
+  case pluginPreparationFailed
+  case pluginCompletionStarted
+  case pluginCompletionCompleted
+  case pluginCompletionFailed
+  case pluginEvent
   case profileToolAuditBestEffort
   case toolAuthorizationStarted
   case toolAuthorizationSucceeded
